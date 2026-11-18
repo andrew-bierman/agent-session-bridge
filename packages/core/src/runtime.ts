@@ -5,6 +5,7 @@ import {
   realpath,
   readFile,
   readdir,
+  rename,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -1186,10 +1187,7 @@ export async function syncSourceSessionToTargets(params: {
     writeFile: async (path, data) => {
       await writeFile(path, data, "utf8");
     },
-    rename: async (from, to) => {
-      const content = await readFile(from, "utf8");
-      await writeFile(to, content, "utf8");
-    },
+    rename,
   });
 
   return {

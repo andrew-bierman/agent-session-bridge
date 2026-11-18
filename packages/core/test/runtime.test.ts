@@ -91,6 +91,7 @@ describe("runtime sync flows", () => {
     });
 
     expect(firstRun.writes).toHaveLength(2);
+    expect(await exists(`${registryPath}.tmp`)).toBe(false);
     expect(
       firstRun.writes.find((write) => write.targetTool === "claude")
         ?.appendedCount,
