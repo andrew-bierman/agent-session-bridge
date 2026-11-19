@@ -197,3 +197,18 @@ The demo loop in [examples/flows/three-agent-loop.md](./examples/flows/three-age
 - Older imported transcripts can still need `repair` if they were created by earlier bridge versions.
 - Some legacy Codex imports can still emit orphan-output warnings during resume.
 - Public API and config shape may still evolve as the project hardens.
+
+### Import an OpenCode text session
+
+Export a session with OpenCode v2, then import it into a Bridge-managed mirror:
+
+```sh
+opencode session export --standalone SESSION_ID > session.json
+agent-session-bridge import-opencode session.json --tool codex
+```
+
+Use a fresh export of the same session to pick up new text messages. Identical
+exports do not duplicate messages. Shortened or edited exports are rejected,
+as are non-text messages such as tool calls and attachments. This command only
+imports from OpenCode. It does not enable automatic sync or write to the
+OpenCode store.

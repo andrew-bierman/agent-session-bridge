@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { syncSourceSessionToTargets } from "../src/runtime.js";
 import { describe, expect, it } from "vitest";
 import {
   appendOpenCodeMessages,
@@ -160,6 +161,33 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
           opencode("session", "export", "--standalone", id),
         );
         expect(exported.info.id).toBe(id);
+        const exportPath = join(root, "export.json");
+        writeFileSync(exportPath, JSON.stringify(exported));
+        const sync = () =>
+          syncSourceSessionToTargets({
+            sourceTool: "opencode",
+            sourcePath: exportPath,
+            homeDir: root,
+            registryPath: join(root, "registry.json"),
+            targetTools: ["codex"],
+          });
+        const first = await sync();
+        expect(first.writes[0]?.appendedCount).toBeGreaterThan(0);
+        expect((await sync()).writes[0]?.appendedCount).toBe(0);
+        writeFileSync(
+          exportPath,
+          JSON.stringify({
+            ...exported,
+            messages: [
+              { ...exported.messages[0], text: "Modified history" },
+              exported.messages[1],
+            ],
+          }),
+        );
+        await expect(sync()).rejects.toThrow(
+          "OpenCode export history diverged",
+        );
+
         expect(
           exported.messages.map((message: { id: string }) => message.id),
         ).toEqual([originalId, turn.id]);

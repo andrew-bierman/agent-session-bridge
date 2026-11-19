@@ -1,4 +1,4 @@
-export type ToolName = "pi" | "claude" | "codex";
+export type ToolName = "pi" | "claude" | "codex" | "opencode";
 
 export type ConversationStatus = "active" | "archived" | "conflicted";
 
@@ -16,6 +16,7 @@ export interface ToolMirror {
   sessionPath: string;
   nativeId: string;
   seededSourceOffset?: number;
+  exportPrefix?: { count: number; digest: string };
 }
 
 export interface RepairState {

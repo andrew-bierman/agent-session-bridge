@@ -22,7 +22,7 @@ function sameRow(a: OpenCodeMessageRow, b: OpenCodeMessageRow): boolean {
   );
 }
 
-// shortcut: OpenCode 2.3.0 projection only; verify replay and live resume before wiring into sync.
+// shortcut: OpenCode 2.3 projection only; verify replay and live resume before wiring into sync.
 export function appendOpenCodeMessages(
   path: string,
   version: string,
@@ -30,7 +30,7 @@ export function appendOpenCodeMessages(
   baseline: readonly OpenCodeMessageRow[],
   appended: readonly OpenCodeMessageRow[],
 ): number {
-  if (version !== "2.3.0") throw new Error("Unsupported OpenCode version");
+  if (version !== "2.3.0" && version !== "2.3.2") throw new Error("Unsupported OpenCode version");
   const db = new DatabaseSync(path, { allowExtension: false });
   try {
     db.exec("PRAGMA foreign_keys = ON; BEGIN IMMEDIATE");

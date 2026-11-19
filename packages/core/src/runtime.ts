@@ -374,7 +374,9 @@ async function upsertCodexThreadIndex(params: {
   );
   const updateAssignments = requestedAssignments
     .filter((assignment) => assignment.column !== "id")
-    .map((assignment) => `${assignment.column} = excluded.${assignment.column}`);
+    .map(
+      (assignment) => `${assignment.column} = excluded.${assignment.column}`,
+    );
 
   if (
     insertColumns.length === 0 ||
@@ -478,8 +480,7 @@ export async function backfillCodexThreadIndex(params: {
 
   const { title, firstUserMessage } =
     extractCodexThreadTitleAndFirstUserMessage(snapshot.chunks);
-  const createdAt =
-    snapshot.chunks[0]?.message.timestamp ?? snapshot.updatedAt;
+  const createdAt = snapshot.chunks[0]?.message.timestamp ?? snapshot.updatedAt;
 
   await upsertCodexThreadIndex({
     homeDir: params.homeDir,
@@ -585,6 +586,61 @@ export async function loadSourceSessionSnapshot(
   explicitSessionId?: string,
 ): Promise<SourceSessionSnapshot> {
   const info = await waitForSourceSessionFile(sourcePath);
+
+  if (sourceTool === "opencode") {
+    const bundle = JSON.parse(await readFile(sourcePath, "utf8"));
+    const { info, messages } = bundle;
+    const cwd = info?.location?.directory;
+    const id = info?.id;
+    if (
+      typeof cwd !== "string" ||
+      !cwd.startsWith("/") ||
+      typeof id !== "string" ||
+      !id.startsWith("ses_") ||
+      !Array.isArray(messages)
+    ) {
+      throw new Error("Expected an OpenCode v2 session export");
+    }
+    const chunks: SourceMessageChunk[] = messages.map((entry, index) => {
+      const blocks =
+        entry?.type === "user" && !entry.files?.length
+          ? [{ type: "text", text: entry.text }]
+          : entry?.type === "assistant"
+            ? entry.content
+            : null;
+      if (
+        entry?.error ||
+        typeof entry?.id !== "string" ||
+        !Number.isFinite(entry?.time?.created) ||
+        !Array.isArray(blocks) ||
+        !blocks.length ||
+        blocks.some(
+          (block) => block?.type !== "text" || typeof block.text !== "string",
+        )
+      ) {
+        throw new Error(`Unsupported OpenCode message at index ${index}`);
+      }
+      return {
+        sourceOffset: index + 1,
+        message: {
+          id: entry.id,
+          role: entry.type,
+          timestamp: new Date(entry.time.created).toISOString(),
+          content: blocks,
+        },
+      };
+    });
+    return {
+      sourceTool,
+      sourcePath,
+      sourceSessionId: id,
+      cwd,
+      updatedAt: new Date(
+        info.time?.updated ?? info.time?.created,
+      ).toISOString(),
+      chunks,
+    };
+  }
 
   if (sourceTool === "pi") {
     const session = await readPiSession(sourcePath);
@@ -703,6 +759,7 @@ function attachSourceMirror(
     mirrors: {
       ...conversation.mirrors,
       [sourceTool]: {
+        ...conversation.mirrors[sourceTool],
         nativeId: sourceSessionId,
         sessionPath: sourcePath,
       },
@@ -1009,8 +1066,7 @@ async function appendToCodexMirror(
   if (hasMeta) {
     const { title, firstUserMessage } =
       extractCodexThreadTitleAndFirstUserMessage(chunks);
-    const createdAt =
-      chunks[0]?.message.timestamp ?? new Date().toISOString();
+    const createdAt = chunks[0]?.message.timestamp ?? new Date().toISOString();
     const updatedAt =
       chunks.at(-1)?.message.timestamp ??
       chunks[0]?.message.timestamp ??
@@ -1039,6 +1095,9 @@ export async function syncSourceSessionToTargets(params: {
   now?: Date;
   targetTools?: ToolName[];
 }): Promise<SyncSourceSessionResult> {
+  if (params.targetTools?.includes("opencode")) {
+    throw new Error("OpenCode target sync is not available");
+  }
   const now = params.now ?? new Date();
   const snapshot = await loadSourceSessionSnapshot(
     params.sourceTool,
@@ -1070,12 +1129,15 @@ export async function syncSourceSessionToTargets(params: {
     );
 
   const seededSourceOffset =
-    conversation.mirrors[params.sourceTool]?.nativeId === snapshot.sourceSessionId
+    conversation.mirrors[params.sourceTool]?.nativeId ===
+    snapshot.sourceSessionId
       ? conversation.mirrors[params.sourceTool]?.seededSourceOffset
       : undefined;
   const sourceChunks =
     typeof seededSourceOffset === "number"
-      ? snapshot.chunks.filter((chunk) => chunk.sourceOffset > seededSourceOffset)
+      ? snapshot.chunks.filter(
+          (chunk) => chunk.sourceOffset > seededSourceOffset,
+        )
       : snapshot.chunks;
   const authoredSourceChunks = sourceChunks.filter(
     (chunk) =>
@@ -1094,6 +1156,26 @@ export async function syncSourceSessionToTargets(params: {
     params.sourcePath,
     snapshot.updatedAt,
   );
+
+  if (params.sourceTool === "opencode") {
+    const mirror = conversation.mirrors.opencode!;
+    const digest = (count: number) =>
+      createHash("sha256")
+        .update(JSON.stringify(snapshot.chunks.slice(0, count)))
+        .digest("hex");
+    const prefix = mirror.exportPrefix;
+    if (
+      prefix &&
+      (prefix.count > snapshot.chunks.length ||
+        prefix.digest !== digest(prefix.count))
+    ) {
+      throw new Error("OpenCode export history diverged");
+    }
+    mirror.exportPrefix = {
+      count: snapshot.chunks.length,
+      digest: digest(snapshot.chunks.length),
+    };
+  }
 
   const targetTools = (params.targetTools ?? ["pi", "claude", "codex"]).filter(
     (tool) => tool !== params.sourceTool,
@@ -1233,7 +1315,8 @@ async function readSessionCandidate(
         id: session.header.id,
         path,
         sourceTool: "pi",
-        updatedAt: session.entries.at(-1)?.timestamp ?? session.header.timestamp,
+        updatedAt:
+          session.entries.at(-1)?.timestamp ?? session.header.timestamp,
       };
     }
 
@@ -1265,9 +1348,8 @@ async function readSessionCandidate(
     const meta = items.find((item) => item.type === "session_meta");
     return {
       id:
-        (typeof meta?.payload.id === "string"
-          ? meta.payload.id
-          : undefined) ?? deterministicUuid(path),
+        (typeof meta?.payload.id === "string" ? meta.payload.id : undefined) ??
+        deterministicUuid(path),
       path,
       sourceTool: "codex",
       updatedAt:
@@ -1322,7 +1404,9 @@ export async function listSessionCandidatesForProject(
         : await walkJsonlFiles(join(homeDir, ".codex", "sessions"));
   const candidates = (
     await Promise.all(
-      files.map((path) => readSessionCandidate(tool, path, canonicalProjectKey)),
+      files.map((path) =>
+        readSessionCandidate(tool, path, canonicalProjectKey),
+      ),
     )
   )
     .filter(isSessionCandidate)
@@ -1369,8 +1453,10 @@ export async function importLatestSessionToTarget(params: {
       }),
   });
   const registry = await loadRegistry(params.registryPath, { readFile });
-  const linkedConversations = findConversationsByProjectKey(registry, projectKey)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const linkedConversations = findConversationsByProjectKey(
+    registry,
+    projectKey,
+  ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const linkedConversation =
     linkedConversations.length === 1 ? linkedConversations[0] : undefined;
   const candidates = await listForeignSessionCandidates(

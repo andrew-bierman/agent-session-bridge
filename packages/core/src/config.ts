@@ -1,11 +1,13 @@
 import { normalizePath } from "./path-utils.js";
 import type { ToolName } from "./types.js";
 
+type HookTool = Exclude<ToolName, "opencode">;
+
 export interface BridgeConfig {
   optIn: boolean;
   enabledProjects: string[];
   disabledProjects: string[];
-  directions: Record<`${ToolName}->${ToolName}`, boolean>;
+  directions: Record<`${HookTool}->${HookTool}`, boolean>;
   redactionPatterns: RegExp[];
 }
 
@@ -13,7 +15,7 @@ export interface SerializedBridgeConfig {
   optIn: boolean;
   enabledProjects: string[];
   disabledProjects: string[];
-  directions: Record<`${ToolName}->${ToolName}`, boolean>;
+  directions: Record<`${HookTool}->${HookTool}`, boolean>;
   redactionPatterns: Array<{
     source: string;
     flags: string;
@@ -70,6 +72,7 @@ export function shouldSyncDirection(
   sourceTool: ToolName,
   targetTool: ToolName,
 ): boolean {
+  if (sourceTool === "opencode" || targetTool === "opencode") return false;
   return Boolean(config.directions[`${sourceTool}->${targetTool}`]);
 }
 

@@ -1197,8 +1197,8 @@ async function inspectCodexMirrorIndexForProject(
   missingRows: number;
   invalidThreadIds: number;
 }> {
-  const conversations = registry.conversations.filter(
-    (conversation) => conversationMatchesProject(conversation, cwd),
+  const conversations = registry.conversations.filter((conversation) =>
+    conversationMatchesProject(conversation, cwd),
   );
 
   let mirrorsScanned = 0;
@@ -1212,9 +1212,11 @@ async function inspectCodexMirrorIndexForProject(
     }
 
     mirrorsScanned += 1;
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      codexMirror.nativeId,
-    )) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        codexMirror.nativeId,
+      )
+    ) {
       invalidThreadIds += 1;
       continue;
     }
@@ -1246,8 +1248,8 @@ async function repairCodexMirrorIndexForProject(
   invalidThreadIds: number;
   missingRollouts: number;
 }> {
-  const conversations = registry.conversations.filter(
-    (conversation) => conversationMatchesProject(conversation, cwd),
+  const conversations = registry.conversations.filter((conversation) =>
+    conversationMatchesProject(conversation, cwd),
   );
 
   let mirrorsScanned = 0;
@@ -1373,8 +1375,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     const codex = await inspectCodexInstall(homeDir, runtimeRoot, deps);
     const claudeState = await readHookRunState(homeDir, "claude-code", deps);
     const codexState = await readHookRunState(homeDir, "codex", deps);
-    const conversations = registry.conversations.filter(
-      (conversation) => conversationMatchesProject(conversation, cwd),
+    const conversations = registry.conversations.filter((conversation) =>
+      conversationMatchesProject(conversation, cwd),
     );
     const codexIndex = await inspectCodexMirrorIndexForProject(
       cwd,
@@ -1499,6 +1501,37 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     deps.stdout(
       `repair would scan Pi, Claude, and Codex mirror index state for ${cwd}`,
     );
+    return 0;
+  }
+
+  if (command === "import-opencode") {
+    const [source] = rest;
+    const tool = readOption(restWithFlags, "--tool");
+    if (
+      !source ||
+      rest.length !== 1 ||
+      dryRun ||
+      (hasFlag(restWithFlags, "--tool") &&
+        tool !== "pi" &&
+        tool !== "claude" &&
+        tool !== "codex")
+    ) {
+      throw new Error(
+        "Usage: import-opencode <OpenCode v2 export.json> [--tool pi|claude|codex]",
+      );
+    }
+    const result = await syncSourceSessionToTargets({
+      sourceTool: "opencode",
+      sourcePath: resolve(cwd, source),
+      targetTools,
+      registryPath: resolveRegistryPath(homeDir),
+      homeDir,
+    });
+    for (const write of result.writes) {
+      deps.stdout(
+        `${write.targetTool}: ${write.targetSessionId} (${write.appendedCount} records appended)`,
+      );
+    }
     return 0;
   }
 
