@@ -22,6 +22,36 @@ function sameRow(a: OpenCodeMessageRow, b: OpenCodeMessageRow): boolean {
   );
 }
 
+export function readOpenCodeRows(
+  path: string,
+  version: string,
+  sessionId: string,
+) {
+  checkVersion(version);
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    db.exec("BEGIN");
+    const rows = db
+      .prepare(
+        `SELECT ${fields} FROM session_message WHERE session_id = ? ORDER BY seq`,
+      )
+      .all(sessionId) as unknown as OpenCodeMessageRow[];
+    const cursor = db
+      .prepare("SELECT seq FROM event_sequence WHERE aggregate_id = ?")
+      .get(sessionId)?.seq;
+    if (typeof cursor !== "number")
+      throw new Error("Missing OpenCode event sequence");
+    return { rows, cursor };
+  } finally {
+    db.close();
+  }
+}
+
+function checkVersion(version: string) {
+  if (version !== "2.3.0" && version !== "2.3.2")
+    throw new Error("Unsupported OpenCode version");
+}
+
 // shortcut: OpenCode 2.3 projection only; verify replay and live resume before wiring into sync.
 export function appendOpenCodeMessages(
   path: string,
@@ -30,7 +60,7 @@ export function appendOpenCodeMessages(
   baseline: readonly OpenCodeMessageRow[],
   appended: readonly OpenCodeMessageRow[],
 ): number {
-  if (version !== "2.3.0" && version !== "2.3.2") throw new Error("Unsupported OpenCode version");
+  checkVersion(version);
   const db = new DatabaseSync(path, { allowExtension: false });
   try {
     db.exec("PRAGMA foreign_keys = ON; BEGIN IMMEDIATE");

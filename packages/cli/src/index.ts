@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,6 +23,7 @@ import {
   serializeBridgeConfig,
   setRepairState,
   syncSourceSessionToTargets,
+  returnCodexTurnsToOpenCode,
   upsertConversation,
   hasCodexThreadIndexEntry,
   type BridgeConfig,
@@ -1501,6 +1503,29 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     deps.stdout(
       `repair would scan Pi, Claude, and Codex mirror index state for ${cwd}`,
     );
+    return 0;
+  }
+
+  if (command === "return-to-opencode") {
+    const [id, database] = rest;
+    if (!id || !database || rest.length !== 2 || restWithFlags.length !== 2) {
+      throw new Error(
+        "Usage: return-to-opencode <linked Codex session ID> <OpenCode database path>",
+      );
+    }
+    const version = execFileSync("opencode", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+    })
+      .trim()
+      .replace(/^opencode v/, "");
+    const count = await returnCodexTurnsToOpenCode({
+      registryPath: resolveRegistryPath(homeDir),
+      codexSessionId: id,
+      databasePath: resolve(cwd, database),
+      version,
+    });
+    deps.stdout(`OpenCode: ${count} messages appended`);
     return 0;
   }
 

@@ -1,11 +1,20 @@
 import { execFile, execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { syncSourceSessionToTargets } from "../src/runtime.js";
+import {
+  returnCodexTurnsToOpenCode,
+  syncSourceSessionToTargets,
+} from "../src/runtime.js";
 import { describe, expect, it } from "vitest";
 import {
   appendOpenCodeMessages,
@@ -194,6 +203,28 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(exported.messages[1].content).toEqual([
           { type: "text", text: "Original session retains this turn" },
         ]);
+        const codex = first.writes[0]!;
+        appendFileSync(
+          codex.sessionPath,
+          JSON.stringify({
+            timestamp: new Date(now + 2).toISOString(),
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "Codex imported answer" }],
+            },
+          }) + "\n",
+        );
+        const sendBack = () =>
+          returnCodexTurnsToOpenCode({
+            registryPath: join(root, "registry.json"),
+            codexSessionId: codex.targetSessionId,
+            databasePath: path,
+            version,
+          });
+        expect(await sendBack()).toBe(1);
+        expect(await sendBack()).toBe(0);
         await promisify(execFile)(
           "opencode",
           [
@@ -216,6 +247,7 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         });
         expect(modelRequest).toContain("Original session retains this turn");
         expect(modelRequest).toContain("Continue the original thread");
+        expect(modelRequest).toContain("Codex imported answer");
         const resumed = JSON.parse(
           opencode("session", "export", "--standalone", id),
         );

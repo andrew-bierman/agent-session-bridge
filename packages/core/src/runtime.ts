@@ -580,6 +580,38 @@ async function loadTargetCodexState(path: string): Promise<{
   };
 }
 
+function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
+  return messages.map((entry, index) => {
+    const blocks =
+      entry?.type === "user" && !entry.files?.length
+        ? [{ type: "text", text: entry.text }]
+        : entry?.type === "assistant"
+          ? entry.content
+          : null;
+    if (
+      entry?.error ||
+      typeof entry?.id !== "string" ||
+      !Number.isFinite(entry?.time?.created) ||
+      !Array.isArray(blocks) ||
+      !blocks.length ||
+      blocks.some(
+        (block) => block?.type !== "text" || typeof block.text !== "string",
+      )
+    ) {
+      throw new Error(`Unsupported OpenCode message at index ${index}`);
+    }
+    return {
+      sourceOffset: index + 1,
+      message: {
+        id: entry.id,
+        role: entry.type,
+        timestamp: new Date(entry.time.created).toISOString(),
+        content: blocks,
+      },
+    };
+  });
+}
+
 export async function loadSourceSessionSnapshot(
   sourceTool: ToolName,
   sourcePath: string,
@@ -601,35 +633,7 @@ export async function loadSourceSessionSnapshot(
     ) {
       throw new Error("Expected an OpenCode v2 session export");
     }
-    const chunks: SourceMessageChunk[] = messages.map((entry, index) => {
-      const blocks =
-        entry?.type === "user" && !entry.files?.length
-          ? [{ type: "text", text: entry.text }]
-          : entry?.type === "assistant"
-            ? entry.content
-            : null;
-      if (
-        entry?.error ||
-        typeof entry?.id !== "string" ||
-        !Number.isFinite(entry?.time?.created) ||
-        !Array.isArray(blocks) ||
-        !blocks.length ||
-        blocks.some(
-          (block) => block?.type !== "text" || typeof block.text !== "string",
-        )
-      ) {
-        throw new Error(`Unsupported OpenCode message at index ${index}`);
-      }
-      return {
-        sourceOffset: index + 1,
-        message: {
-          id: entry.id,
-          role: entry.type,
-          timestamp: new Date(entry.time.created).toISOString(),
-          content: blocks,
-        },
-      };
-    });
+    const chunks = normalizeOpenCodeMessages(messages);
     return {
       sourceTool,
       sourcePath,
@@ -1086,6 +1090,128 @@ async function appendToCodexMirror(
   return { appendedCount, nextWatermarks, finalCount: count };
 }
 
+// shortcut: explicit linked Codex text sessions only, extend after richer turns are verified.
+export async function returnCodexTurnsToOpenCode(params: {
+  registryPath: string;
+  codexSessionId: string;
+  databasePath: string;
+  version: string;
+}): Promise<number> {
+  const { readOpenCodeRows, appendOpenCodeMessages } =
+    await import("./opencode-store.js");
+  const registry = await loadRegistry(params.registryPath, { readFile });
+  const conversation = findConversationByNativeSession(
+    registry,
+    "codex",
+    params.codexSessionId,
+  );
+  const source = conversation?.mirrors.codex;
+  const target = conversation?.mirrors.opencode;
+  if (!source || source.seededSourceOffset == null || !target?.exportPrefix) {
+    throw new Error("Expected a Codex mirror seeded from an OpenCode export");
+  }
+  if (
+    getMaxSyncedSourceOffset(
+      conversation.lastWrittenOffsets,
+      "opencode",
+      target.nativeId,
+      "codex",
+      source.nativeId,
+    ) !== target.exportPrefix.count
+  ) {
+    throw new Error("Codex must contain the latest imported OpenCode history");
+  }
+  const snapshot = await loadSourceSessionSnapshot("codex", source.sessionPath);
+  if (snapshot.sourceSessionId !== params.codexSessionId)
+    throw new Error("Codex session identity changed");
+  const turns = snapshot.chunks.filter(
+    (chunk) => chunk.sourceOffset > source.seededSourceOffset!,
+  );
+  const { rows, cursor } = readOpenCodeRows(
+    params.databasePath,
+    params.version,
+    target.nativeId,
+  );
+  const { count, digest } = target.exportPrefix;
+  if (rows.length < count) throw new Error("OpenCode history diverged");
+  const prefix = normalizeOpenCodeMessages(
+    rows.slice(0, count).map((row) => ({
+      ...JSON.parse(row.data),
+      type: row.type,
+      id: row.id,
+    })),
+  );
+  if (
+    createHash("sha256").update(JSON.stringify(prefix)).digest("hex") !== digest
+  ) {
+    throw new Error("OpenCode history diverged");
+  }
+  const existing = rows.slice(count);
+  if (existing.length > turns.length)
+    throw new Error("OpenCode history diverged");
+  const pending = [];
+  for (const [index, { message, sourceOffset }] of turns.entries()) {
+    if (
+      message.role === "tool" ||
+      !message.content.length ||
+      message.content.some((block) => block.type !== "text")
+    ) {
+      throw new Error("Only Codex text turns can be returned to OpenCode");
+    }
+    const id =
+      "msg_b21d9e00" +
+      deterministicUuid(`${source.nativeId}:${sourceOffset}:${target.nativeId}`)
+        .replaceAll("-", "")
+        .slice(8);
+    const time = Date.parse(message.timestamp);
+    const type = message.role;
+    const data = JSON.stringify(
+      type === "user"
+        ? {
+            time: { created: time },
+            text: message.content
+              .map((block) => (block.type === "text" ? block.text : ""))
+              .join("\n"),
+          }
+        : {
+            time: { created: time, completed: time },
+            agent: "build",
+            model: { id: "codex-import", providerID: "openai" },
+            content: message.content,
+            finish: "stop",
+            cost: 0,
+            tokens: {
+              input: 0,
+              output: 0,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+            },
+          },
+    );
+    const prior = existing[index];
+    if (prior) {
+      if (prior.id !== id || prior.type !== type || prior.data !== data)
+        throw new Error("OpenCode history diverged");
+    } else {
+      pending.push({
+        id,
+        type,
+        time_created: time,
+        time_updated: time,
+        seq: Math.max(cursor, rows.at(-1)?.seq ?? 0) + pending.length + 1,
+        data,
+      });
+    }
+  }
+  return appendOpenCodeMessages(
+    params.databasePath,
+    params.version,
+    target.nativeId,
+    rows,
+    pending,
+  );
+}
+
 export async function syncSourceSessionToTargets(params: {
   sourceTool: ToolName;
   sourcePath: string;
@@ -1159,6 +1285,15 @@ export async function syncSourceSessionToTargets(params: {
 
   if (params.sourceTool === "opencode") {
     const mirror = conversation.mirrors.opencode!;
+    if (
+      snapshot.chunks.some(({ message }) =>
+        message.id.startsWith("msg_b21d9e00"),
+      )
+    ) {
+      throw new Error(
+        "Reimporting an OpenCode session with returned turns is not supported",
+      );
+    }
     const digest = (count: number) =>
       createHash("sha256")
         .update(JSON.stringify(snapshot.chunks.slice(0, count)))

@@ -212,3 +212,16 @@ exports do not duplicate messages. Shortened or edited exports are rejected,
 as are non-text messages such as tool calls and attachments. This command only
 imports from OpenCode. It does not enable automatic sync or write to the
 OpenCode store.
+
+To rehearse the return path on a disposable OpenCode 2.3.0 or 2.3.2
+database, finish a text turn in the linked Codex mirror and stop both
+clients before running:
+
+```sh
+agent-session-bridge return-to-opencode CODEX_SESSION_ID /path/to/copied/opencode.db
+```
+
+Bridge appends to the linked OpenCode session ID, skips identical retries,
+and refuses a divergent OpenCode transcript. This is a manual text-only
+handoff. Reimporting an OpenCode export that contains a returned turn is
+blocked to prevent echoing that turn back into Codex.
