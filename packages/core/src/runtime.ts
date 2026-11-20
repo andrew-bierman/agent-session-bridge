@@ -71,6 +71,7 @@ export interface SourceSessionSnapshot {
   cwd: string;
   updatedAt: string;
   chunks: SourceMessageChunk[];
+  rawMessageCount?: number;
 }
 
 export interface SyncWriteResult {
@@ -581,7 +582,8 @@ async function loadTargetCodexState(path: string): Promise<{
 }
 
 function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
-  return messages.map((entry, index) => {
+  return messages.flatMap((entry, index) => {
+    if (entry?.type === "agent-switched" || entry?.type === "idle") return [];
     const blocks =
       entry?.type === "user" && !entry.files?.length
         ? [{ type: "text", text: entry.text }]
@@ -600,15 +602,17 @@ function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
     ) {
       throw new Error(`Unsupported OpenCode message at index ${index}`);
     }
-    return {
-      sourceOffset: index + 1,
-      message: {
-        id: entry.id,
-        role: entry.type,
-        timestamp: new Date(entry.time.created).toISOString(),
-        content: blocks,
+    return [
+      {
+        sourceOffset: index + 1,
+        message: {
+          id: entry.id,
+          role: entry.type,
+          timestamp: new Date(entry.time.created).toISOString(),
+          content: blocks,
+        },
       },
-    };
+    ];
   });
 }
 
@@ -638,6 +642,7 @@ export async function loadSourceSessionSnapshot(
       sourceTool,
       sourcePath,
       sourceSessionId: id,
+      rawMessageCount: messages.length,
       cwd,
       updatedAt: new Date(
         info.time?.updated ?? info.time?.created,
@@ -1090,6 +1095,35 @@ async function appendToCodexMirror(
   return { appendedCount, nextWatermarks, finalCount: count };
 }
 
+const returnedOpenCodePrefix = "msg_b21d9e00";
+
+function returnedOpenCodeId(
+  codexId: string,
+  offset: number,
+  openCodeId: string,
+) {
+  return (
+    returnedOpenCodePrefix +
+    deterministicUuid(`${codexId}:${offset}:${openCodeId}`)
+      .replaceAll("-", "")
+      .slice(8)
+  );
+}
+
+function codexImportOffset(conversation: BridgeConversation): number {
+  return conversation.lastWrittenOffsets.reduce(
+    (offset, watermark) =>
+      watermark.sourceTool === "opencode" &&
+      watermark.targetTool === "codex" &&
+      watermark.targetSessionId === conversation.mirrors.codex?.nativeId
+        ? Math.max(offset, watermark.targetOffset)
+        : offset,
+    conversation.mirrors.opencode?.exportPrefix?.codexOffset ??
+      conversation.mirrors.codex?.seededSourceOffset ??
+      0,
+  );
+}
+
 // shortcut: explicit linked Codex text sessions only, extend after richer turns are verified.
 export async function returnCodexTurnsToOpenCode(params: {
   registryPath: string;
@@ -1117,7 +1151,7 @@ export async function returnCodexTurnsToOpenCode(params: {
       target.nativeId,
       "codex",
       source.nativeId,
-    ) !== target.exportPrefix.count
+    ) !== (target.exportPrefix.lastNativeOffset ?? target.exportPrefix.count)
   ) {
     throw new Error("Codex must contain the latest imported OpenCode history");
   }
@@ -1125,7 +1159,7 @@ export async function returnCodexTurnsToOpenCode(params: {
   if (snapshot.sourceSessionId !== params.codexSessionId)
     throw new Error("Codex session identity changed");
   const turns = snapshot.chunks.filter(
-    (chunk) => chunk.sourceOffset > source.seededSourceOffset!,
+    (chunk) => chunk.sourceOffset > codexImportOffset(conversation),
   );
   const { rows, cursor } = readOpenCodeRows(
     params.databasePath,
@@ -1158,11 +1192,11 @@ export async function returnCodexTurnsToOpenCode(params: {
     ) {
       throw new Error("Only Codex text turns can be returned to OpenCode");
     }
-    const id =
-      "msg_b21d9e00" +
-      deterministicUuid(`${source.nativeId}:${sourceOffset}:${target.nativeId}`)
-        .replaceAll("-", "")
-        .slice(8);
+    const id = returnedOpenCodeId(
+      source.nativeId,
+      sourceOffset,
+      target.nativeId,
+    );
     const time = Date.parse(message.timestamp);
     const type = message.role;
     const data = JSON.stringify(
@@ -1265,7 +1299,7 @@ export async function syncSourceSessionToTargets(params: {
           (chunk) => chunk.sourceOffset > seededSourceOffset,
         )
       : snapshot.chunks;
-  const authoredSourceChunks = sourceChunks.filter(
+  let authoredSourceChunks = sourceChunks.filter(
     (chunk) =>
       !isImportedMirrorChunk({
         watermarks: conversation.lastWrittenOffsets,
@@ -1285,30 +1319,72 @@ export async function syncSourceSessionToTargets(params: {
 
   if (params.sourceTool === "opencode") {
     const mirror = conversation.mirrors.opencode!;
-    if (
-      snapshot.chunks.some(({ message }) =>
-        message.id.startsWith("msg_b21d9e00"),
-      )
-    ) {
-      throw new Error(
-        "Reimporting an OpenCode session with returned turns is not supported",
-      );
-    }
     const digest = (count: number) =>
       createHash("sha256")
-        .update(JSON.stringify(snapshot.chunks.slice(0, count)))
+        .update(
+          JSON.stringify(
+            snapshot.chunks.filter((chunk) => chunk.sourceOffset <= count),
+          ),
+        )
         .digest("hex");
     const prefix = mirror.exportPrefix;
     if (
       prefix &&
-      (prefix.count > snapshot.chunks.length ||
+      (prefix.count > snapshot.rawMessageCount! ||
         prefix.digest !== digest(prefix.count))
     ) {
       throw new Error("OpenCode export history diverged");
     }
+    const suffix = snapshot.chunks.filter(
+      (chunk) => chunk.sourceOffset > (prefix?.count ?? 0),
+    );
+    const returned = suffix.filter(({ message }) =>
+      message.id.startsWith(returnedOpenCodePrefix),
+    );
+    const codex = conversation.mirrors.codex;
+    let codexOffset = codexImportOffset(conversation);
+    if (suffix.length && codex) {
+      const codexSnapshot = await loadSourceSessionSnapshot(
+        "codex",
+        codex.sessionPath,
+      );
+      if (codexSnapshot.sourceSessionId !== codex.nativeId)
+        throw new Error("Codex session identity changed");
+      const pending = codexSnapshot.chunks.filter(
+        (chunk) => chunk.sourceOffset > codexOffset,
+      );
+      if (
+        pending.length !== returned.length ||
+        pending.some((chunk, index) => {
+          const echo = returned[index]?.message;
+          return (
+            !echo ||
+            echo.id !==
+              returnedOpenCodeId(
+                codex.nativeId,
+                chunk.sourceOffset,
+                mirror.nativeId,
+              ) ||
+            echo.role !== chunk.message.role ||
+            echo.timestamp !== chunk.message.timestamp ||
+            JSON.stringify(echo.content) !==
+              JSON.stringify(chunk.message.content)
+          );
+        })
+      )
+        throw new Error("OpenCode and Codex histories diverged");
+      codexOffset = pending.at(-1)?.sourceOffset ?? codexOffset;
+    } else if (returned.length) {
+      throw new Error("OpenCode export contains unlinked returned turns");
+    }
+    authoredSourceChunks = authoredSourceChunks.filter(
+      ({ message }) => !message.id.startsWith(returnedOpenCodePrefix),
+    );
     mirror.exportPrefix = {
-      count: snapshot.chunks.length,
-      digest: digest(snapshot.chunks.length),
+      count: snapshot.rawMessageCount!,
+      digest: digest(snapshot.rawMessageCount!),
+      codexOffset,
+      lastNativeOffset: authoredSourceChunks.at(-1)?.sourceOffset ?? 0,
     };
   }
 

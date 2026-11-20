@@ -1,6 +1,8 @@
 import { execFile, execFileSync } from "node:child_process";
 import {
   appendFileSync,
+  copyFileSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -204,18 +206,56 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
           { type: "text", text: "Original session retains this turn" },
         ]);
         const codex = first.writes[0]!;
-        appendFileSync(
-          codex.sessionPath,
-          JSON.stringify({
-            timestamp: new Date(now + 2).toISOString(),
-            type: "response_item",
-            payload: {
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "Codex imported answer" }],
+        const live = process.env.TEST_CODEX_LIVE === "1";
+        const returnedText = live
+          ? "Original session retains this turn"
+          : "Codex imported answer";
+        if (live) {
+          const isolatedCodex = join(root, ".codex");
+          const auth = join(isolatedCodex, "auth.json");
+          copyFileSync(
+            join(
+              process.env.CODEX_HOME ?? join(process.env.HOME!, ".codex"),
+              "auth.json",
+            ),
+            auth,
+          );
+          chmodSync(auth, 0o600);
+          const result = await promisify(execFile)(
+            "codex",
+            [
+              "exec",
+              "resume",
+              codex.targetSessionId,
+              "--ignore-user-config",
+              "--skip-git-repo-check",
+              "--json",
+              "Repeat the previous assistant message verbatim and then add the marker LIVE_CODEX_RETURN. Use no tools.",
+            ],
+            {
+              ...options,
+              timeout: 60000,
+              env: { ...options.env, CODEX_HOME: isolatedCodex },
             },
-          }) + "\n",
-        );
+          );
+          expect(result.stdout).toContain(returnedText);
+          expect(result.stdout).toContain("LIVE_CODEX_RETURN");
+        } else {
+          appendFileSync(
+            codex.sessionPath,
+            JSON.stringify({
+              timestamp: new Date(now + 2).toISOString(),
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "assistant",
+                content: [
+                  { type: "output_text", text: "Codex imported answer" },
+                ],
+              },
+            }) + "\n",
+          );
+        }
         const sendBack = () =>
           returnCodexTurnsToOpenCode({
             registryPath: join(root, "registry.json"),
@@ -223,7 +263,7 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
             databasePath: path,
             version,
           });
-        expect(await sendBack()).toBe(1);
+        expect(await sendBack()).toBe(live ? 2 : 1);
         expect(await sendBack()).toBe(0);
         await promisify(execFile)(
           "opencode",
@@ -247,7 +287,9 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         });
         expect(modelRequest).toContain("Original session retains this turn");
         expect(modelRequest).toContain("Continue the original thread");
-        expect(modelRequest).toContain("Codex imported answer");
+        expect(modelRequest).toContain(
+          live ? "LIVE_CODEX_RETURN" : returnedText,
+        );
         const resumed = JSON.parse(
           opencode("session", "export", "--standalone", id),
         );
@@ -255,11 +297,31 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(JSON.stringify(resumed.messages)).toContain(
           "Offline continuation",
         );
+        writeFileSync(exportPath, JSON.stringify(resumed));
+        expect((await sync()).writes[0]?.appendedCount).toBeGreaterThan(0);
+        expect((await sync()).writes[0]?.appendedCount).toBe(0);
+        appendFileSync(
+          codex.sessionPath,
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "Second Codex handoff" }],
+            },
+          }) + "\n",
+        );
+        expect(await sendBack()).toBe(1);
+        expect(await sendBack()).toBe(0);
+        expect(opencode("session", "export", "--standalone", id)).toContain(
+          "Second Codex handoff",
+        );
       } finally {
         provider.closeAllConnections();
         await new Promise<void>((resolve) => provider.close(() => resolve()));
         rmSync(root, { recursive: true, force: true });
       }
-    }, 20000);
+    }, 75000);
   },
 );

@@ -16,7 +16,12 @@ export interface ToolMirror {
   sessionPath: string;
   nativeId: string;
   seededSourceOffset?: number;
-  exportPrefix?: { count: number; digest: string };
+  exportPrefix?: {
+    count: number;
+    digest: string;
+    codexOffset?: number;
+    lastNativeOffset?: number;
+  };
 }
 
 export interface RepairState {

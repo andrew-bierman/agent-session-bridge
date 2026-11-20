@@ -437,7 +437,8 @@ export function convertCodexItemToNormalized(
   item: CodexRolloutItem,
 ): NormalizedMessage | null {
   if (item.type === "response_item" && item.payload.type === "message") {
-    const role = item.payload.role === "assistant" ? "assistant" : "user";
+    const role = item.payload.role;
+    if (role !== "user" && role !== "assistant") return null;
     const normalized: NormalizedMessage = {
       id:
         typeof item.payload.id === "string"

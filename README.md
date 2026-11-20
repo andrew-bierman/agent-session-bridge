@@ -222,6 +222,6 @@ agent-session-bridge return-to-opencode CODEX_SESSION_ID /path/to/copied/opencod
 ```
 
 Bridge appends to the linked OpenCode session ID, skips identical retries,
-and refuses a divergent OpenCode transcript. This is a manual text-only
-handoff. Reimporting an OpenCode export that contains a returned turn is
-blocked to prevent echoing that turn back into Codex.
+and refuses divergent histories. To switch back to Codex, export the OpenCode
+session again and repeat the import into the linked Codex mirror. Bridge
+skips the returned turns already in Codex. This is a manual text-only handoff.
