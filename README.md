@@ -225,3 +225,14 @@ Bridge appends to the linked OpenCode session ID, skips identical retries,
 and refuses divergent histories. To switch back to Codex, export the OpenCode
 session again and repeat the import into the linked Codex mirror. Bridge
 skips the returned turns already in Codex. This is a manual text-only handoff.
+
+For a linked or new OpenCode text session, the same command can handle both
+directions on a disposable or backed-up store. Stop both clients before sync:
+
+```sh
+agent-session-bridge sync-opencode OPENCODE_SESSION_ID /path/to/opencode.db
+```
+
+The command creates or updates the Codex mirror when OpenCode is ahead, or
+returns pending Codex text turns when OpenCode is unchanged. If both sides
+have new turns, it refuses the sync and leaves both histories intact.

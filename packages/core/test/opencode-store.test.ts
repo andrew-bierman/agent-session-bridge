@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import {
   appendFileSync,
   copyFileSync,
+  readFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -9,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +22,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   appendOpenCodeMessages,
+  readOpenCodeRows,
   type OpenCodeMessageRow,
 } from "../src/opencode-store.js";
 
@@ -179,7 +182,7 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
             sourceTool: "opencode",
             sourcePath: exportPath,
             homeDir: root,
-            registryPath: join(root, "registry.json"),
+            registryPath: join(root, ".agent-session-bridge", "registry.json"),
             targetTools: ["codex"],
           });
         const first = await sync();
@@ -258,7 +261,7 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         }
         const sendBack = () =>
           returnCodexTurnsToOpenCode({
-            registryPath: join(root, "registry.json"),
+            registryPath: join(root, ".agent-session-bridge", "registry.json"),
             codexSessionId: codex.targetSessionId,
             databasePath: path,
             version,
@@ -297,9 +300,17 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(JSON.stringify(resumed.messages)).toContain(
           "Offline continuation",
         );
-        writeFileSync(exportPath, JSON.stringify(resumed));
-        expect((await sync()).writes[0]?.appendedCount).toBeGreaterThan(0);
-        expect((await sync()).writes[0]?.appendedCount).toBe(0);
+        const cli = fileURLToPath(
+          new URL("../../../bin/agent-session-bridge", import.meta.url),
+        );
+        const syncCommand = () =>
+          execFileSync(
+            process.execPath,
+            [cli, "sync-opencode", id, path],
+            options,
+          );
+        expect(syncCommand()).toMatch(/: [1-9]\d* records appended/);
+        expect(syncCommand()).toMatch(/: 0 records appended/);
         appendFileSync(
           codex.sessionPath,
           JSON.stringify({
@@ -312,11 +323,46 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
             },
           }) + "\n",
         );
-        expect(await sendBack()).toBe(1);
-        expect(await sendBack()).toBe(0);
+        expect(syncCommand()).toContain("1 messages appended");
+        expect(syncCommand()).toContain("0 messages appended");
         expect(opencode("session", "export", "--standalone", id)).toContain(
           "Second Codex handoff",
         );
+        const divergentCodex = JSON.stringify({
+          timestamp: new Date().toISOString(),
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Independent Codex turn" }],
+          },
+        });
+        appendFileSync(codex.sessionPath, divergentCodex + "\n");
+        const current = readOpenCodeRows(path, version, id);
+        appendOpenCodeMessages(path, version, id, current.rows, [
+          {
+            ...turn,
+            id: "msg_0000000000000000000000000000004",
+            seq: current.cursor + 1,
+          },
+        ]);
+        const before = readFileSync(codex.sessionPath, "utf8");
+        const beforeExport = JSON.parse(
+          opencode("session", "export", "--standalone", id),
+        );
+        const rejected = await promisify(execFile)(
+          process.execPath,
+          [cli, "sync-opencode", id, path],
+          options,
+        ).then(
+          () => "",
+          (error) => error.stderr,
+        );
+        expect(rejected).toContain("OpenCode and Codex histories diverged");
+        expect(readFileSync(codex.sessionPath, "utf8")).toBe(before);
+        expect(
+          JSON.parse(opencode("session", "export", "--standalone", id)),
+        ).toEqual(beforeExport);
       } finally {
         provider.closeAllConnections();
         await new Promise<void>((resolve) => provider.close(() => resolve()));

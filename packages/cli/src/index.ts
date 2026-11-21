@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
   backfillCodexThreadIndex,
   createDefaultConfig,
   findConversationByBridgeSessionId,
+  findConversationByNativeSession,
   findConversationByProjectKey,
   getClaudeCodeProjectDir,
   getPiSessionDir,
@@ -18,6 +19,7 @@ import {
   isProjectEnabled,
   listForeignSessionCandidates,
   loadBridgeConfig,
+  loadSourceSessionSnapshot,
   loadRegistry,
   saveRegistry,
   serializeBridgeConfig,
@@ -1504,6 +1506,76 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       `repair would scan Pi, Claude, and Codex mirror index state for ${cwd}`,
     );
     return 0;
+  }
+
+  if (command === "sync-opencode") {
+    const [id, database] = rest;
+    if (
+      !id ||
+      !database ||
+      !/^ses_[a-zA-Z0-9]+$/.test(id) ||
+      restWithFlags.length !== 2
+    ) {
+      throw new Error(
+        "Usage: sync-opencode <OpenCode session ID> <OpenCode database path>",
+      );
+    }
+    const databasePath = await fs.realpath(resolve(cwd, database));
+    const version = execFileSync("opencode", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+    })
+      .trim()
+      .replace(/^opencode v/, "");
+    if (version !== "2.3.0" && version !== "2.3.2")
+      throw new Error("Unsupported OpenCode version");
+    const directory = await fs.mkdtemp(
+      join(tmpdir(), "bridge-opencode-export-"),
+    );
+    try {
+      const sourcePath = join(directory, "session.json");
+      const exported = execFileSync(
+        "opencode",
+        ["session", "export", "--standalone", id],
+        {
+          cwd,
+          env: { ...process.env, OPENCODE_DB: databasePath },
+          encoding: "utf8",
+          timeout: 30000,
+          maxBuffer: 32 * 1024 * 1024,
+        },
+      );
+      await fs.writeFile(sourcePath, exported, { mode: 0o600 });
+      const source = await loadSourceSessionSnapshot("opencode", sourcePath);
+      if (source.sourceSessionId !== id)
+        throw new Error("OpenCode export session identity changed");
+      const existing = findConversationByNativeSession(registry, "opencode", id)
+        ?.mirrors.codex;
+      const registryPath = resolveRegistryPath(homeDir);
+      const result = await syncSourceSessionToTargets({
+        sourceTool: "opencode",
+        sourcePath,
+        targetTools: ["codex"],
+        registryPath,
+        homeDir,
+      });
+      const write = result.writes[0]!;
+      const returned =
+        existing && write.appendedCount === 0
+          ? await returnCodexTurnsToOpenCode({
+              registryPath,
+              codexSessionId: write.targetSessionId,
+              databasePath,
+              version,
+            })
+          : 0;
+      deps.stdout(
+        `Codex ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
+      );
+      return 0;
+    } finally {
+      await fs.rm(directory, { force: true, recursive: true });
+    }
   }
 
   if (command === "return-to-opencode") {
