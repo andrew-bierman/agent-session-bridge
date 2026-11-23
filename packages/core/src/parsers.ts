@@ -1,5 +1,4 @@
 import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
 import { createZstdDecompress } from "node:zlib";
 
@@ -56,13 +55,17 @@ export async function* iterateCodexRollout(
   const input = path.endsWith(".zst")
     ? file.compose(createZstdDecompress())
     : file;
-  const lines = createInterface({ input, crlfDelay: Infinity });
+  let tail = "";
   try {
-    for await (const line of lines) {
-      if (line.trim()) yield JSON.parse(line) as CodexRolloutItem;
+    for await (const chunk of input.setEncoding("utf8")) {
+      const lines = (tail + chunk).split("\n");
+      tail = lines.pop()!;
+      for (const line of lines) {
+        if (line.trim()) yield JSON.parse(line) as CodexRolloutItem;
+      }
     }
+    if (tail.trim()) yield JSON.parse(tail) as CodexRolloutItem;
   } finally {
-    lines.close();
     input.destroy();
     file.destroy();
   }

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractMessageEntries,
   flattenPiActiveBranch,
+  iterateCodexRollout,
   readClaudeCodeSession,
   readCodexRollout,
   readPiSession,
@@ -75,5 +76,23 @@ describe("session parsers", () => {
     const compressed = path + ".zst";
     await writeFile(compressed, "invalid compressed data");
     await expect(readCodexRollout(compressed)).rejects.toThrow();
+  });
+  it("can abandon a compressed rollout without an unhandled stream error", async () => {
+    const path = join(
+      await mkdtemp(join(tmpdir(), "asb-zstd-stop-")),
+      "rollout.zst",
+    );
+    const record = '{"type":"event_msg"}\n';
+    await writeFile(path, zstdCompressSync(record.repeat(100_000)));
+    const iterator = iterateCodexRollout(path);
+    expect((await iterator.next()).value).toEqual({ type: "event_msg" });
+    await expect(iterator.return(undefined)).resolves.toMatchObject({
+      done: true,
+    });
+    await writeFile(
+      path,
+      zstdCompressSync(record + "invalid JSON\n" + record.repeat(100_000)),
+    );
+    await expect(readCodexRollout(path)).rejects.toThrow(SyntaxError);
   });
 });

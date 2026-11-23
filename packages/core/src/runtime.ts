@@ -1438,6 +1438,7 @@ export async function seedLinkedSessionInOpenCode(params: {
   registryPath: string;
   importVerified: (
     bundle: ReturnType<typeof buildOpenCodeSeed>,
+    alreadyLinked: boolean,
   ) => Promise<void>;
 }) {
   return withRegistryWriteLock(params.registryPath, async () => {
@@ -1488,7 +1489,7 @@ export async function seedLinkedSessionInOpenCode(params: {
         "Source or destination already belongs to a different bridge link",
       );
     }
-    await params.importVerified(bundle);
+    await params.importVerified(bundle, Boolean(existing));
     if (existing) return bundle;
 
     const { projectKey, canonicalCwd } = await deriveProjectKey(cwd, {

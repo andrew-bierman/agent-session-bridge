@@ -1610,7 +1610,29 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
     const importVerified = async (
       bundle: Awaited<ReturnType<typeof createOpenCodeSeed>>,
+      alreadyLinked: boolean,
     ) => {
+      const verifyStoredRows = async () => {
+        const { verifyOpenCodeSeedRows } =
+          await import("../../core/src/opencode-store.js");
+        if (
+          !verifyOpenCodeSeedRows(
+            databasePath,
+            version,
+            bundle.info.id,
+            bundle.info.location.directory,
+            bundle.messages,
+          )
+        ) {
+          throw new Error(
+            "OpenCode mirror differs from the source; no existing history was overwritten",
+          );
+        }
+      };
+      if (alreadyLinked) {
+        await verifyStoredRows();
+        return;
+      }
       const directory = await fs.mkdtemp(
         join(tmpdir(), "bridge-opencode-seed-"),
       );
@@ -1639,19 +1661,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         if (
           (await fs.stat(exportPath)).size >= bufferConstants.MAX_STRING_LENGTH
         ) {
-          const { verifyOpenCodeSeedRows } =
-            await import("../../core/src/opencode-store.js");
-          if (
-            verifyOpenCodeSeedRows(
-              databasePath,
-              version,
-              bundle.info.id,
-              bundle.info.location.directory,
-              bundle.messages,
-            )
-          )
-            return;
-          throw new Error("OpenCode mirror differs from the source");
+          await verifyStoredRows();
+          return;
         }
         const actual = JSON.parse(await fs.readFile(exportPath, "utf8"));
         if (
