@@ -65,7 +65,7 @@ function withoutFlags(args: string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index]!;
     if (value.startsWith("--")) {
-      if (value === "--cwd" || value === "--tool") {
+      if (value === "--cwd" || value === "--tool" || value === "--target-cwd") {
         index += 1;
       }
       continue;
@@ -1603,24 +1603,28 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   if (command === "import-opencode") {
     const [source] = rest;
+    const targetCwd = readOption(restWithFlags, "--target-cwd");
     const tool = readOption(restWithFlags, "--tool");
     if (
       !source ||
       rest.length !== 1 ||
       dryRun ||
+      (hasFlag(restWithFlags, "--target-cwd") &&
+        (!targetCwd || targetCwd.startsWith("--"))) ||
       (hasFlag(restWithFlags, "--tool") &&
         tool !== "pi" &&
         tool !== "claude" &&
         tool !== "codex")
     ) {
       throw new Error(
-        "Usage: import-opencode <OpenCode v2 export.json> [--tool pi|claude|codex]",
+        "Usage: import-opencode <OpenCode v2 export.json> [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
       );
     }
     const result = await syncSourceSessionToTargets({
       sourceTool: "opencode",
       sourcePath: resolve(cwd, source),
       targetTools,
+      targetCwd: targetCwd ? resolve(cwd, targetCwd) : undefined,
       registryPath: resolveRegistryPath(homeDir),
       homeDir,
     });

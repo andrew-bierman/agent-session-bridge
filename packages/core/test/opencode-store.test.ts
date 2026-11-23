@@ -44,7 +44,7 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
     const bundle = {
       info: {
         id: "ses_tool_history",
-        location: { directory: root },
+        location: { directory: join(root, "missing-project") },
         time: { created: now },
       },
       messages: [
@@ -66,25 +66,28 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
         },
       ],
     };
-    const sync = () =>
+    const sync = (targetCwd?: string) =>
       syncSourceSessionToTargets({
         sourceTool: "opencode",
         sourcePath,
         homeDir: root,
         registryPath: join(root, "registry.json"),
         targetTools: ["codex"],
+        targetCwd,
       });
     writeFileSync(sourcePath, JSON.stringify(bundle));
-    const result = await sync();
+    await expect(sync()).rejects.toThrow("Source project directory is missing");
+    const result = await sync(root);
     const rollout = readFileSync(result.writes[0]!.sessionPath, "utf8");
+    expect(JSON.parse(rollout.split("\n")[0]!).payload.cwd).toBe(root);
     expect(rollout).toContain("example.txt");
     expect(rollout).toContain("historical tool result");
     expect(rollout).not.toContain("provider reasoning marker");
     expect(rollout).not.toContain("function_call");
-    expect((await sync()).writes[0]?.appendedCount).toBe(0);
+    expect((await sync(root)).writes[0]?.appendedCount).toBe(0);
     tool.state.status = "running";
     writeFileSync(sourcePath, JSON.stringify(bundle));
-    await expect(sync()).rejects.toThrow("OpenCode tool call is unsettled");
+    await expect(sync(root)).rejects.toThrow("OpenCode tool call is unsettled");
     expect(readFileSync(result.writes[0]!.sessionPath, "utf8")).toBe(rollout);
   } finally {
     rmSync(root, { recursive: true, force: true });

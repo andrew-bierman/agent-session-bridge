@@ -212,7 +212,9 @@ exports do not duplicate messages. Settled tool calls with text results are
 carried as historical text, so the receiving client can read them without
 replaying them as tool calls. Provider reasoning is omitted. Shortened or
 edited exports, attachments, and unsettled calls are rejected. This command
-imports from OpenCode without writing to its store.
+imports from OpenCode without writing to its store. For a session whose
+original project is gone, pass `--target-cwd /path/to/existing/project` to
+place its native mirror in that directory. Future imports reuse that location.
 
 To rehearse the return path on a disposable OpenCode 2.3.0 or 2.3.2
 database, finish a text turn in the linked Codex mirror and stop both

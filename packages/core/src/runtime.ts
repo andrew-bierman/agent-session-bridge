@@ -1306,6 +1306,7 @@ export async function syncSourceSessionToTargets(params: {
   sourceTool: ToolName;
   sourcePath: string;
   sourceSessionId?: string;
+  targetCwd?: string;
   registryPath: string;
   homeDir: string;
   now?: Date;
@@ -1321,20 +1322,41 @@ export async function syncSourceSessionToTargets(params: {
     params.sourceSessionId,
   );
   const registry = await loadRegistry(params.registryPath, { readFile });
-  const { canonicalCwd, projectKey } = await deriveProjectKey(snapshot.cwd, {
+  const linked = findConversationByNativeSession(
+    registry,
+    params.sourceTool,
+    snapshot.sourceSessionId,
+  );
+  const mirrorCwd =
+    params.targetCwd ??
+    (params.sourceTool === "opencode" ? linked?.canonicalCwd : undefined) ??
+    snapshot.cwd;
+  const { canonicalCwd, projectKey } = await deriveProjectKey(mirrorCwd, {
     realpath,
-    findRepoRoot: async (cwd) =>
-      findGitRepoRoot(cwd, {
-        exists,
-      }),
+    findRepoRoot: async (cwd) => findGitRepoRoot(cwd, { exists }),
+  }).catch((error: NodeJS.ErrnoException) => {
+    if (params.sourceTool === "opencode" && error.code === "ENOENT") {
+      throw new Error(
+        params.targetCwd
+          ? "Target project directory is missing"
+          : "Source project directory is missing; supply --target-cwd with an existing project",
+        { cause: error },
+      );
+    }
+    throw error;
   });
+  if (
+    params.targetCwd &&
+    (!(await stat(canonicalCwd)).isDirectory() ||
+      (linked && linked.canonicalCwd !== canonicalCwd))
+  ) {
+    throw new Error(
+      "Target project must be a directory and match the existing mirror location",
+    );
+  }
 
   let conversation =
-    findConversationByNativeSession(
-      registry,
-      params.sourceTool,
-      snapshot.sourceSessionId,
-    ) ??
+    linked ??
     createConversation(
       projectKey,
       canonicalCwd,
@@ -1479,7 +1501,7 @@ export async function syncSourceSessionToTargets(params: {
       targetTool === "pi"
         ? await appendToPiMirror(
             mirror,
-            snapshot.cwd,
+            mirrorCwd,
             params.sourceTool,
             snapshot.sourceSessionId,
             targetChunks,
@@ -1488,7 +1510,7 @@ export async function syncSourceSessionToTargets(params: {
         : targetTool === "claude"
           ? await appendToClaudeMirror(
               mirror,
-              snapshot.cwd,
+              mirrorCwd,
               params.sourceTool,
               snapshot.sourceSessionId,
               targetChunks,
@@ -1496,7 +1518,7 @@ export async function syncSourceSessionToTargets(params: {
             )
           : await appendToCodexMirror(
               mirror,
-              snapshot.cwd,
+              mirrorCwd,
               params.homeDir,
               params.sourceTool,
               snapshot.sourceSessionId,
