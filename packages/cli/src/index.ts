@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
+import { constants as bufferConstants } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, realpathSync } from "node:fs";
+import { createWriteStream, existsSync, realpathSync } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -1614,7 +1616,15 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       );
       try {
         const path = join(directory, "session.json");
-        await fs.writeFile(path, JSON.stringify(bundle), { mode: 0o600 });
+        await pipeline(
+          (function* () {
+            yield `{"info":${JSON.stringify(bundle.info)},"messages":[`;
+            for (const [index, message] of bundle.messages.entries())
+              yield (index ? "," : "") + JSON.stringify(message);
+            yield "]}";
+          })(),
+          createWriteStream(path, { mode: 0o600, flags: "wx" }),
+        );
         opencode(
           ["session", "import", "--standalone", path],
           bundle.info.location.directory,
@@ -1626,6 +1636,23 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
           bundle.info.location.directory,
           env,
         );
+        if (
+          (await fs.stat(exportPath)).size >= bufferConstants.MAX_STRING_LENGTH
+        ) {
+          const { verifyOpenCodeSeedRows } =
+            await import("../../core/src/opencode-store.js");
+          if (
+            verifyOpenCodeSeedRows(
+              databasePath,
+              version,
+              bundle.info.id,
+              bundle.info.location.directory,
+              bundle.messages,
+            )
+          )
+            return;
+          throw new Error("OpenCode mirror differs from the source");
+        }
         const actual = JSON.parse(await fs.readFile(exportPath, "utf8"));
         if (
           actual.info?.id !== bundle.info.id ||

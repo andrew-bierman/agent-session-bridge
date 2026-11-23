@@ -1501,9 +1501,7 @@ export async function seedLinkedSessionInOpenCode(params: {
       seededSourceOffset: bundle.messages.length,
       exportPrefix: {
         count: bundle.messages.length,
-        digest: createHash("sha256")
-          .update(JSON.stringify(normalizeOpenCodeMessages(bundle.messages)))
-          .digest("hex"),
+        digest: chunkDigest(normalizeOpenCodeMessages(bundle.messages)),
         linkedOffset: offset,
         lastNativeOffset: 0,
       },
@@ -1527,13 +1525,18 @@ function sourcePrefixDigest(
   snapshot: SourceSessionSnapshot,
   offset: number,
 ): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify(
-        snapshot.chunks.filter((chunk) => chunk.sourceOffset <= offset),
-      ),
-    )
-    .digest("hex");
+  return chunkDigest(
+    snapshot.chunks.filter((chunk) => chunk.sourceOffset <= offset),
+  );
+}
+
+function chunkDigest(chunks: SourceMessageChunk[]): string {
+  const hash = createHash("sha256").update("[");
+  for (const [index, chunk] of chunks.entries()) {
+    if (index) hash.update(",");
+    hash.update(JSON.stringify(chunk));
+  }
+  return hash.update("]").digest("hex");
 }
 
 function verifySeedPrefix(
@@ -1612,9 +1615,7 @@ async function returnLinkedTurnsUnderLock(params: {
       id: row.id,
     })),
   );
-  if (
-    createHash("sha256").update(JSON.stringify(prefix)).digest("hex") !== digest
-  ) {
+  if (chunkDigest(prefix) !== digest) {
     throw new Error("OpenCode history diverged");
   }
   const existing = rows.slice(count);
@@ -1746,14 +1747,7 @@ async function syncSourceSessionUnderLock(params: {
 
   if (params.sourceTool === "opencode") {
     const mirror = conversation.mirrors.opencode!;
-    const digest = (count: number) =>
-      createHash("sha256")
-        .update(
-          JSON.stringify(
-            snapshot.chunks.filter((chunk) => chunk.sourceOffset <= count),
-          ),
-        )
-        .digest("hex");
+    const digest = (count: number) => sourcePrefixDigest(snapshot, count);
     const prefix = mirror.exportPrefix;
     if (
       prefix &&

@@ -3,6 +3,7 @@ import {
   appendFileSync,
   copyFileSync,
   readFileSync,
+  realpathSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -23,6 +24,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendOpenCodeMessages,
   readOpenCodeRows,
+  verifyOpenCodeSeedRows,
   type OpenCodeMessageRow,
 } from "../src/opencode-store.js";
 
@@ -209,6 +211,28 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         );
         opencode("session", "import", "--standalone", bundle);
         const path = join(root, "data", "opencode", "opencode.db");
+        const expected = [
+          {
+            id: originalId,
+            type: "user" as const,
+            time: { created: now },
+            text: "Initial prompt",
+          },
+        ];
+        expect(
+          verifyOpenCodeSeedRows(
+            path,
+            version,
+            id,
+            realpathSync(project),
+            expected,
+          ),
+        ).toBe(true);
+        expect(
+          verifyOpenCodeSeedRows(path, version, id, realpathSync(project), [
+            { ...expected[0]!, text: "Edited prompt" },
+          ]),
+        ).toBe(false);
         const db = new DatabaseSync(path, { readOnly: true });
         const baseline = db
           .prepare(

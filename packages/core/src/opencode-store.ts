@@ -47,6 +47,52 @@ export function readOpenCodeRows(
   }
 }
 
+export function verifyOpenCodeSeedRows(
+  path: string,
+  version: string,
+  sessionId: string,
+  directory: string,
+  expected: readonly ({
+    id: string;
+    time: { created: number };
+  } & (
+    | { type: "user"; text: string }
+    | { type: "assistant"; content: unknown }
+  ))[],
+): boolean {
+  checkVersion(version);
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    db.exec("BEGIN");
+    const session = db
+      .prepare("SELECT directory FROM session_v2 WHERE id = ?")
+      .get(sessionId);
+    if (session?.directory !== directory) return false;
+    const rows = db
+      .prepare(
+        "SELECT id, type, data FROM session_message WHERE session_id = ? ORDER BY seq LIMIT ?",
+      )
+      .iterate(sessionId, expected.length);
+    let offset = 0;
+    for (const row of rows) {
+      const message = expected[offset++]!;
+      const data = JSON.parse(String(row.data));
+      if (
+        row.id !== message.id ||
+        row.type !== message.type ||
+        data.time?.created !== message.time.created ||
+        (message.type === "user"
+          ? data.text !== message.text
+          : JSON.stringify(data.content) !== JSON.stringify(message.content))
+      )
+        return false;
+    }
+    return offset === expected.length;
+  } finally {
+    db.close();
+  }
+}
+
 function checkVersion(version: string) {
   if (version !== "2.3.0" && version !== "2.3.2")
     throw new Error("Unsupported OpenCode version");
