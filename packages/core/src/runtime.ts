@@ -606,7 +606,9 @@ function openCodeHistoryBlock(block: any): { type: "text"; text: string }[] {
     state.status === "completed" &&
     (!Array.isArray(state.content) ||
       state.content.some(
-        (part: any) => part?.type !== "text" || typeof part.text !== "string",
+        (part: any) =>
+          part?.type !== "file" &&
+          (part?.type !== "text" || typeof part.text !== "string"),
       ))
   ) {
     throw new Error("Unsupported OpenCode tool result");
@@ -625,7 +627,13 @@ function openCodeHistoryBlock(block: any): { type: "text"; text: string }[] {
           input: state.input,
           status: state.status,
           ...(state.status === "completed"
-            ? { output: state.content.map((part: any) => part.text) }
+            ? {
+                output: state.content.map((part: any) =>
+                  part.type === "file"
+                    ? "[Source tool attachment omitted; see the original session]"
+                    : part.text,
+                ),
+              }
             : { error: state.error }),
         }),
     },
@@ -656,6 +664,8 @@ function normalizeOpenCodeMessages(
       historical =
         "Historical OpenCode compaction summary: " +
         JSON.stringify(entry.summary);
+    } else if (entry?.type === "compaction" && entry.status === "failed") {
+      historical = "[Source OpenCode compaction failed]";
     } else if (
       entry?.type === "shell" &&
       (entry.status === "exited" || entry.status === "killed") &&
@@ -699,7 +709,9 @@ function normalizeOpenCodeMessages(
               : entry.content
             : null;
     if (
-      (entry?.error && entry.type !== "assistant") ||
+      (entry?.error &&
+        entry.type !== "assistant" &&
+        historical === undefined) ||
       typeof entry?.id !== "string" ||
       !Number.isFinite(entry?.time?.created) ||
       !Array.isArray(blocks)

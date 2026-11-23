@@ -230,7 +230,8 @@ carried as historical text, so the receiving client can read them without
 replaying them as tool calls. Synthetic records and completed compaction
 summaries are carried as labeled historical text, along with finished shell
 records and project-location changes. Failed assistant turns retain partial
-text and receive a marker. Detected user attachments receive a marker while
+text and receive a marker. Failed compactions receive a marker as well.
+Detected user and tool attachments receive a marker while
 the attachment stays in OpenCode. OpenCode system records are omitted and
 counted in the report. Provider reasoning is omitted. Shortened or edited
 exports and unsettled calls are rejected. This command

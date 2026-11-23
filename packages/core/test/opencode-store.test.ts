@@ -40,7 +40,10 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
       state: {
         status: "completed",
         input: { path: "example.txt" },
-        content: [{ type: "text", text: "historical tool result" }],
+        content: [
+          { type: "text", text: "historical tool result" },
+          { type: "file", url: "private-tool-attachment" },
+        ],
       },
     };
     const bundle = {
@@ -81,6 +84,13 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
             detail: "private provider error detail",
           },
           content: [{ type: "text", text: "Partial assistant answer" }],
+        },
+        {
+          id: "msg_failed_compaction",
+          type: "compaction",
+          status: "failed",
+          error: { name: "provider error" },
+          time: { created: now },
         },
         { id: "msg_model", type: "model-switched", time: { created: now } },
         {
@@ -126,6 +136,11 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
     expect(rollout).toContain("historical shell output");
     expect(rollout).toContain("/previous-project");
     expect(rollout).toContain("example.txt");
+    expect(rollout).toContain(
+      "[Source tool attachment omitted; see the original session]",
+    );
+    expect(rollout).not.toContain("private-tool-attachment");
+    expect(rollout).toContain("[Source OpenCode compaction failed]");
     expect(rollout).toContain("historical tool result");
     expect(rollout).not.toContain("provider reasoning marker");
     expect(rollout).not.toContain("function_call");
