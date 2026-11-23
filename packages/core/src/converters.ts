@@ -210,9 +210,10 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "tool_result" &&
     typeof candidate.tool_use_id === "string"
   ) {
-    const output = typeof candidate.content === "string"
-      ? candidate.content
-      : serializeUnknownText(candidate.content);
+    const output =
+      typeof candidate.content === "string"
+        ? candidate.content
+        : serializeUnknownText(candidate.content);
     if (output === null) {
       return [];
     }
@@ -230,9 +231,10 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "function_call_output" &&
     typeof candidate.call_id === "string"
   ) {
-    const output = typeof candidate.output === "string"
-      ? candidate.output
-      : serializeUnknownText(candidate.output);
+    const output =
+      typeof candidate.output === "string"
+        ? candidate.output
+        : serializeUnknownText(candidate.output);
     if (output === null) {
       return [];
     }
@@ -464,7 +466,44 @@ export function convertCodexItemToNormalized(
 
   if (
     item.type === "response_item" &&
-    item.payload.type === "function_call_output"
+    (item.payload.type === "function_call" ||
+      item.payload.type === "custom_tool_call")
+  ) {
+    const { call_id, name, type, input } = item.payload;
+    if (typeof call_id !== "string" || typeof name !== "string") return null;
+    const raw = item.payload.arguments;
+    let args = raw;
+    if (typeof raw === "string") {
+      try {
+        args = JSON.parse(raw);
+      } catch {
+        args = raw;
+      }
+    }
+    return {
+      id: call_id,
+      role: "assistant",
+      timestamp: codexItemTimestamp(item),
+      content: [
+        {
+          type: "tool_call",
+          id: call_id,
+          name,
+          arguments:
+            type === "custom_tool_call"
+              ? { input }
+              : args && typeof args === "object" && !Array.isArray(args)
+                ? (args as Record<string, unknown>)
+                : { arguments: raw },
+        },
+      ],
+    };
+  }
+
+  if (
+    item.type === "response_item" &&
+    (item.payload.type === "function_call_output" ||
+      item.payload.type === "custom_tool_call_output")
   ) {
     return {
       id:

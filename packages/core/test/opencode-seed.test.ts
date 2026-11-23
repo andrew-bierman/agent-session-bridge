@@ -121,6 +121,68 @@ it.each(fixtures)(
   },
 );
 
+it("preserves standalone Codex tool records with JSON arguments and raw custom input", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-standalone-calls-"));
+  const path = join(root, "standalone.jsonl");
+  const base = readFileSync(fixturePath("codex-rollout.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .slice(0, 2);
+  const records = [
+    {
+      type: "function_call",
+      call_id: "one",
+      name: "read_file",
+      arguments: '{"path":"notes.txt"}',
+    },
+    {
+      type: "custom_tool_call",
+      call_id: "two",
+      name: "apply_patch",
+      input: "patch text",
+    },
+    { type: "custom_tool_call_output", call_id: "two", output: "patched" },
+    { type: "function_call_output", call_id: "one", output: "notes" },
+  ];
+  writeFileSync(
+    path,
+    [
+      ...base,
+      ...records.map((payload) =>
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-04-05T10:00:02.000Z",
+          payload,
+        }),
+      ),
+    ].join("\n") + "\n",
+  );
+  const bundle = await createOpenCodeSeed("codex", path, root);
+  const history = bundle.messages.flatMap((message) =>
+    message.type === "assistant"
+      ? message.content.map((block) =>
+          JSON.parse(block.text.slice(block.text.indexOf("{"))),
+        )
+      : [],
+  );
+  expect(history).toEqual([
+    {
+      type: "tool_call",
+      id: "one",
+      name: "read_file",
+      arguments: { path: "notes.txt" },
+    },
+    {
+      type: "tool_call",
+      id: "two",
+      name: "apply_patch",
+      arguments: { input: "patch text" },
+    },
+    { type: "tool_result", toolCallId: "two", output: "patched" },
+    { type: "tool_result", toolCallId: "one", output: "notes" },
+  ]);
+});
+
 it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
   "seeds and syncs %s under its original ID without duplicating history",
   (tool, name) => {
