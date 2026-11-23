@@ -1752,6 +1752,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   if (command === "sync-opencode") {
+    const outboundOnly = hasFlag(restWithFlags, "--outbound-only");
     const all = hasFlag(restWithFlags, "--all");
     const [id, second] = rest;
     const database = all ? id : second;
@@ -1759,10 +1760,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       !database ||
       (!all && (!id || !/^ses_[a-zA-Z0-9]+$/.test(id))) ||
       rest.length !== (all ? 1 : 2) ||
-      restWithFlags.length !== 2
+      restWithFlags.length !== (outboundOnly ? 3 : 2)
     ) {
       throw new Error(
-        "Usage: sync-opencode <OpenCode session ID> <database>, or sync-opencode --all <database>",
+        "Usage: sync-opencode <OpenCode session ID> <database>, or sync-opencode --all <database> [--outbound-only]",
       );
     }
     const databasePath = await fs.realpath(resolve(cwd, database));
@@ -1781,6 +1782,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         databasePath,
         version,
         sessionId: id,
+        outboundOnly,
       });
       const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
       deps.stdout(
@@ -1799,6 +1801,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         conversation.status !== "active" ||
         !mirror?.exportPrefix ||
         !conversation.mirrors[mirror.seedTool ?? "codex"] ||
+        (outboundOnly && !mirror.openCodeDatabasePath) ||
         (mirror.openCodeDatabasePath &&
           mirror.openCodeDatabasePath !== databasePath)
       )

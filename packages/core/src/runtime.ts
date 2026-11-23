@@ -1363,6 +1363,7 @@ export function syncOpenCodeSession(params: {
   databasePath: string;
   version: string;
   sessionId: string;
+  outboundOnly?: boolean;
 }) {
   return withRegistryWriteLock(params.registryPath, async () => {
     const registry = await loadRegistry(params.registryPath, { readFile });
@@ -1378,6 +1379,26 @@ export function syncOpenCodeSession(params: {
     )
       throw new Error("OpenCode session is linked to a different database");
     const tool = mirror?.seedTool ?? "codex";
+    const sendBack = (sessionId: string) =>
+      returnLinkedTurnsUnderLock({
+        registryPath: params.registryPath,
+        tool,
+        sessionId,
+        databasePath: params.databasePath,
+        version: params.version,
+      });
+    if (params.outboundOnly) {
+      const source = linked?.mirrors[tool];
+      if (!source || !mirror?.openCodeDatabasePath)
+        throw new Error(
+          "Outbound sync requires a session linked to this OpenCode database",
+        );
+      return {
+        tool,
+        write: { targetSessionId: source.nativeId, appendedCount: 0 },
+        returned: await sendBack(source.nativeId),
+      };
+    }
     const result = await syncSourceSessionUnderLock({
       sourceTool: "opencode",
       sourcePath: params.databasePath,
@@ -1390,13 +1411,7 @@ export function syncOpenCodeSession(params: {
     const write = result.writes[0]!;
     const returned =
       linked?.mirrors[tool] && write.appendedCount === 0
-        ? await returnLinkedTurnsUnderLock({
-            registryPath: params.registryPath,
-            tool,
-            sessionId: write.targetSessionId,
-            databasePath: params.databasePath,
-            version: params.version,
-          })
+        ? await sendBack(write.targetSessionId)
         : 0;
     return { tool, write, returned };
   });

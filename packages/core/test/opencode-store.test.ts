@@ -646,7 +646,16 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
             },
           }) + "\n",
         );
-        expect(syncSeed()).toContain("1 messages appended");
+        const outbound = () =>
+          execFileSync(
+            process.execPath,
+            [cli, "sync-opencode", seededId, path, "--outbound-only"],
+            options,
+          );
+        const beforeOutbound = readFileSync(source, "utf8");
+        expect(outbound()).toContain("1 messages appended");
+        expect(outbound()).toContain("0 messages appended");
+        expect(readFileSync(source, "utf8")).toBe(beforeOutbound);
         expect(syncSeed()).toContain("0 messages appended");
         expect(inspectSeed().messages.at(-1)?.text).toBe(
           "Turn on the original Codex session",

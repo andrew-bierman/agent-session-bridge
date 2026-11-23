@@ -266,7 +266,10 @@ agent-session-bridge sync-opencode --all /path/to/opencode.db
 ```
 
 A conflict is reported per session. The pass continues with the other
-links and exits with status 1 if any link is rejected.
+links and exits with status 1 if any link is rejected. Add
+`--outbound-only` to send new turns to OpenCode without writing native
+transcript files. This mode requires a link tied to the selected database
+and refuses to send if OpenCode has advanced independently.
 
 The command creates or updates the Codex mirror when OpenCode is ahead, or
 returns pending Codex text turns when OpenCode is unchanged. If both sides
