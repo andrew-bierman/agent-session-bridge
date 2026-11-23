@@ -112,6 +112,7 @@ agent-session-bridge import --tool codex --all
 - `repair` does not backfill old sessions, discover missing sessions, or create new bridge links.
 - `import --latest` imports the single best foreign-session candidate for the repo into the selected target tool.
 - `import --all` is the one-shot backfill command. It imports all foreign-session candidates for the repo into the selected target tool.
+- Add `--dry-run` to preview the latest candidate or count bulk candidate routes without writing to any session store or the registry.
 
 Typical recovery flow:
 

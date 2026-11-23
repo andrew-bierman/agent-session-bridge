@@ -1729,6 +1729,7 @@ export async function importLatestSessionToTarget(params: {
   homeDir: string;
   registryPath: string;
   now?: Date;
+  dryRun?: boolean;
 }): Promise<{
   imported: boolean;
   candidate: SessionCandidate | null;
@@ -1758,6 +1759,8 @@ export async function importLatestSessionToTarget(params: {
   if (!candidate) {
     return { imported: false, candidate: null };
   }
+
+  if (params.dryRun) return { imported: false, candidate };
 
   const result = await syncSourceSessionToTargets({
     sourceTool: candidate.sourceTool,

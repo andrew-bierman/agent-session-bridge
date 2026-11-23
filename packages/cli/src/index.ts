@@ -1642,25 +1642,37 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       for (const targetTool of targetTools) {
         const result = await importLatestSessionToTarget({
           targetTool,
+          dryRun,
           cwd,
           homeDir,
           registryPath: resolveRegistryPath(homeDir),
         });
-        if (result.imported) {
+        if (dryRun ? result.candidate : result.imported) {
           importedCount += 1;
         }
         deps.stdout(
           `import ${targetTool}: ${
-            result.imported
+            (dryRun ? result.candidate : result.imported)
               ? (result.candidate?.id ?? "imported")
               : "no candidate"
-          }${dryRun ? " (dry-run ignored for imports)" : ""}`,
+          }${dryRun ? " (dry-run)" : ""}`,
         );
       }
       return importedCount > 0 ? 0 : 1;
     }
 
     const candidates = await listForeignSessionCandidates(cwd, homeDir);
+    if (dryRun) {
+      const routes = candidates.reduce(
+        (count, candidate) =>
+          count +
+          targetTools.filter((target) => target !== candidate.sourceTool)
+            .length,
+        0,
+      );
+      deps.stdout(`dry-run: ${routes} candidate routes; no writes`);
+      return 0;
+    }
     let importedCount = 0;
 
     for (const candidate of candidates) {

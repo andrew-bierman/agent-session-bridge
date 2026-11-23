@@ -476,9 +476,9 @@ CREATE TABLE threads (
       .toString()
       .trim();
     expect(indexedRow).toContain(codexThreadId);
-    expect(lines.some((line) => line.includes("reindexed 1 Codex mirrors"))).toBe(
-      true,
-    );
+    expect(
+      lines.some((line) => line.includes("reindexed 1 Codex mirrors")),
+    ).toBe(true);
   });
 
   it("audits the registry as JSON", async () => {
@@ -815,6 +815,27 @@ CREATE TABLE threads (
       piSessionPath,
       projectDir,
     );
+
+    const preview = await runCli(
+      ["import", "--all", "--dry-run", "--tool", "claude", "--cwd", projectDir],
+      {
+        cwd: repoRoot,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {
+          throw new Error("dry run attempted to save");
+        },
+        stdout: (line) => lines.push(line),
+      },
+    );
+    expect(preview).toBe(0);
+    await expect(readFile(registryPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(
+      access(join(homeDir, ".claude", "projects")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(lines.pop()).toContain("1 candidate route");
 
     const exitCode = await runCli(
       ["import", "--all", "--tool", "claude", "--cwd", projectDir],
