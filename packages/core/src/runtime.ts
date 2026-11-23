@@ -1271,11 +1271,13 @@ export async function createOpenCodeSeed(
   tool: Exclude<ToolName, "opencode">,
   path: string,
   cwd: string,
+  allowIncompleteTools = false,
 ) {
   return buildOpenCodeSeed(
     tool,
     await loadSourceSessionSnapshot(tool, path),
     cwd,
+    allowIncompleteTools,
   );
 }
 
@@ -1287,9 +1289,12 @@ const importedOpenCodeTokens = {
   cache: { read: 0, write: 0 },
 };
 
+class IncompleteOpenCodeToolHistory extends Error {}
+
 function renderOpenCodeHistory(
   chunks: SourceMessageChunk[],
   idForOffset: (offset: number) => string,
+  allowIncompleteTools = false,
 ) {
   const pendingCalls = new Set<string>();
   const messages = chunks.map(({ message, sourceOffset }) => {
@@ -1297,24 +1302,29 @@ function renderOpenCodeHistory(
       if (block.type === "text") return block;
       if (block.type === "thinking")
         return { type: "text" as const, text: "[Source reasoning omitted]" };
+      let issue: string | undefined;
       if (block.type === "tool_call") {
-        if (pendingCalls.has(block.id))
-          throw new Error("Duplicate tool call in OpenCode transcript");
+        if (pendingCalls.has(block.id)) issue = "Duplicate tool call";
         pendingCalls.add(block.id);
       } else if (block.type === "tool_result") {
         if (!pendingCalls.delete(block.toolCallId))
-          throw new Error(
-            "Tool result without a matching call in OpenCode transcript",
-          );
+          issue = "Tool result without a matching call";
       } else {
         throw new Error(
           `Unsupported OpenCode transcript content: ${block.type}`,
         );
       }
+      if (issue && !allowIncompleteTools)
+        throw new IncompleteOpenCodeToolHistory(
+          `${issue} in OpenCode transcript`,
+        );
       return {
         type: "text" as const,
         text:
-          "Historical tool record (already settled): " + JSON.stringify(block),
+          (allowIncompleteTools
+            ? `Historical tool record (${issue ?? "status unverified"}): `
+            : "Historical tool record (already settled): ") +
+          JSON.stringify(block),
       };
     });
     if (!content.length)
@@ -1346,8 +1356,10 @@ function renderOpenCodeHistory(
           tokens: importedOpenCodeTokens,
         };
   });
-  if (pendingCalls.size)
-    throw new Error("Unsettled tool calls in OpenCode transcript");
+  if (pendingCalls.size && !allowIncompleteTools)
+    throw new IncompleteOpenCodeToolHistory(
+      "Unsettled tool calls in OpenCode transcript",
+    );
   return messages;
 }
 
@@ -1355,6 +1367,7 @@ function buildOpenCodeSeed(
   tool: Exclude<ToolName, "opencode">,
   snapshot: SourceSessionSnapshot,
   cwd: string,
+  allowIncompleteTools = false,
 ) {
   if (tool === "codex" && !isCodexThreadId(snapshot.sourceSessionId)) {
     throw new Error("OpenCode sync requires a native Codex thread ID");
@@ -1363,11 +1376,19 @@ function buildOpenCodeSeed(
     throw new Error("Source session has no supported messages");
   const seed = `${tool}:${snapshot.sourceSessionId}`;
   const id = "ses_" + deterministicUuid(seed).replaceAll("-", "");
-  const messages = renderOpenCodeHistory(
-    snapshot.chunks,
-    (sourceOffset) =>
-      "msg_" + deterministicUuid(`${seed}:${sourceOffset}`).replaceAll("-", ""),
-  );
+  const idForOffset = (offset: number) =>
+    "msg_" + deterministicUuid(`${seed}:${offset}`).replaceAll("-", "");
+  let messages;
+  try {
+    messages = renderOpenCodeHistory(snapshot.chunks, idForOffset);
+  } catch (error) {
+    if (
+      !allowIncompleteTools ||
+      !(error instanceof IncompleteOpenCodeToolHistory)
+    )
+      throw error;
+    messages = renderOpenCodeHistory(snapshot.chunks, idForOffset, true);
+  }
   const created = messages[0]!.time.created;
   return {
     info: {
@@ -1396,6 +1417,7 @@ export async function seedLinkedSessionInOpenCode(params: {
   sourcePath: string;
   cwd?: string;
   fallbackCwd?: string;
+  allowIncompleteTools?: boolean;
   databasePath: string;
   registryPath: string;
   importVerified: (
@@ -1419,7 +1441,12 @@ export async function seedLinkedSessionInOpenCode(params: {
       }));
     if (!(await stat(cwd)).isDirectory())
       throw new Error("Source project must be a directory");
-    const bundle = buildOpenCodeSeed(tool, source, cwd);
+    const bundle = buildOpenCodeSeed(
+      tool,
+      source,
+      cwd,
+      params.allowIncompleteTools,
+    );
     const registry = await loadRegistry(params.registryPath, { readFile });
     const linked = findConversationByNativeSession(
       registry,

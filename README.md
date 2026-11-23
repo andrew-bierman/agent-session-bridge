@@ -290,8 +290,11 @@ Use `claude` or `pi` for those transcript formats. The command verifies the
 import by exporting the native session. An identical retry reuses the same
 ID. Changed source history is rejected if the mirror already exists. Seeding
 links the original Codex, Claude Code, or Pi transcript by its native ID.
-It preserves settled tool calls and results as historical text. Unsettled
-calls and attachments detected in the source are rejected. Reasoning and
+It preserves settled tool calls and results as historical text. Append
+`--allow-incomplete-tools` to preview or import older transcripts that contain
+unmatched or ambiguous calls or results. In those imports, tool records are
+labeled as unverified historical text. Ongoing sync still waits for a complete
+pair in newly appended tool history. Attachments are rejected when detected. Reasoning and
 empty messages are marked in the imported transcript without copying reasoning text.
 Run `sync-opencode` with the ID printed by the seed command to exchange new
 text turns and settled tool history with that transcript. A changed seed prefix or independent turns

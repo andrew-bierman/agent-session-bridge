@@ -1518,6 +1518,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   if (command === "seed-opencode") {
     const [tool, ...paths] = rest;
+    const allowIncompleteTools = hasFlag(
+      restWithFlags,
+      "--allow-incomplete-tools",
+    );
     const batch = hasFlag(restWithFlags, "--database");
     const fallback = readOption(restWithFlags, "--target-cwd");
     const fallbackFlag = hasFlag(restWithFlags, "--target-cwd");
@@ -1529,7 +1533,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       paths.length === 0 ||
       (!dryRun && !batch && paths.length !== 2) ||
       restWithFlags.length !==
-        rest.length + (dryRun ? 1 : batch ? 2 : 0) + (fallbackFlag ? 2 : 0)
+        rest.length +
+          (dryRun ? 1 : batch ? 2 : 0) +
+          (fallbackFlag ? 2 : 0) +
+          (allowIncompleteTools ? 1 : 0)
     ) {
       throw new Error(
         "Usage: seed-opencode <codex|claude|pi> <transcript> <database>, seed-opencode <codex|claude|pi> <transcript>... --database <database> [--target-cwd <fallback directory>], or seed-opencode <codex|claude|pi> <transcript>... --dry-run",
@@ -1544,6 +1551,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
             tool,
             resolve(cwd, path),
             project,
+            allowIncompleteTools,
           );
           deps.stdout(
             `${path}: ${bundle.info.id}, ${bundle.messages.length} messages eligible for import`,
@@ -1629,6 +1637,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         sourcePath: await fs.realpath(resolve(cwd, path)),
         cwd: batch ? undefined : project,
         fallbackCwd,
+        allowIncompleteTools,
         databasePath,
         registryPath: resolveRegistryPath(homeDir),
         importVerified,

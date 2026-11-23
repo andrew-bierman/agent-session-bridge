@@ -125,6 +125,15 @@ it.each(fixtures)(
     await expect(createOpenCodeSeed(tool, path, root)).rejects.toThrow(
       "Unsettled tool calls",
     );
+    const recovered = await createOpenCodeSeed(tool, path, root, true);
+    expect(recovered.messages).toHaveLength(2);
+    expect(JSON.stringify(recovered)).toContain(
+      "Historical tool record (status unverified)",
+    );
+    expect(await createOpenCodeSeed(tool, path, root, true)).toEqual(recovered);
+    expect(
+      await createOpenCodeSeed(tool, fixturePath(name), root, true),
+    ).toEqual(await createOpenCodeSeed(tool, fixturePath(name), root));
   },
 );
 
