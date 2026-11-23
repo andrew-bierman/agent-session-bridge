@@ -27,6 +27,8 @@ function textTranscript(tool: (typeof fixtures)[number][0], name: string) {
   const records = lines
     .slice(0, tool === "claude" ? 2 : 3)
     .map((line) => JSON.parse(line));
+  if (tool === "codex")
+    records[0].payload.id = "019cdef0-2584-7a14-8020-123456789abc";
   const assistant = records.at(-1);
   const payload = tool === "codex" ? assistant.payload : assistant.message;
   payload.content = payload.content.slice(0, 1);

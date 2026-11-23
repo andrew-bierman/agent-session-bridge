@@ -16,6 +16,7 @@ export interface ToolMirror {
   sessionPath: string;
   nativeId: string;
   seededSourceOffset?: number;
+  seedPrefix?: { offset: number; digest: string };
   exportPrefix?: {
     count: number;
     digest: string;

@@ -11,6 +11,7 @@ import {
   backfillCodexThreadIndex,
   createDefaultConfig,
   createOpenCodeSeed,
+  seedLinkedCodexInOpenCode,
   findConversationByBridgeSessionId,
   findConversationByNativeSession,
   findConversationByProjectKey,
@@ -1523,11 +1524,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       );
     }
     const databasePath = await fs.realpath(resolve(cwd, database));
-    const bundle = await createOpenCodeSeed(
-      tool,
-      resolve(cwd, transcript),
-      await fs.realpath(cwd),
-    );
+    const sourcePath = await fs.realpath(resolve(cwd, transcript));
+    const project = await fs.realpath(cwd);
     const env = { ...process.env, OPENCODE_DB: databasePath };
     const opencode = (args: string[]) =>
       execFileSync("opencode", args, {
@@ -1543,42 +1541,59 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     if (version !== "2.3.0" && version !== "2.3.2")
       throw new Error("Unsupported OpenCode version");
 
-    const directory = await fs.mkdtemp(join(tmpdir(), "bridge-opencode-seed-"));
-    try {
-      const path = join(directory, "session.json");
-      await fs.writeFile(path, JSON.stringify(bundle), { mode: 0o600 });
-      opencode(["session", "import", "--standalone", path]);
-      const actual = JSON.parse(
-        opencode(["session", "export", "--standalone", bundle.info.id]),
+    const importVerified = async (
+      bundle: Awaited<ReturnType<typeof createOpenCodeSeed>>,
+    ) => {
+      const directory = await fs.mkdtemp(
+        join(tmpdir(), "bridge-opencode-seed-"),
       );
-      if (
-        actual.info?.id !== bundle.info.id ||
-        actual.info?.location?.directory !== bundle.info.location.directory ||
-        !Array.isArray(actual.messages) ||
-        actual.messages.length < bundle.messages.length ||
-        bundle.messages.some((message, i) => {
-          const existing = actual.messages[i];
-          return (
-            existing?.id !== message.id ||
-            existing.type !== message.type ||
-            existing.time?.created !== message.time.created ||
-            (message.type === "user"
-              ? existing.text !== message.text
-              : JSON.stringify(existing.content) !==
-                JSON.stringify(message.content))
-          );
-        })
-      )
-        throw new Error(
-          "OpenCode mirror differs from the source; no existing history was overwritten",
+      try {
+        const path = join(directory, "session.json");
+        await fs.writeFile(path, JSON.stringify(bundle), { mode: 0o600 });
+        opencode(["session", "import", "--standalone", path]);
+        const actual = JSON.parse(
+          opencode(["session", "export", "--standalone", bundle.info.id]),
         );
-      deps.stdout(
-        `OpenCode ${bundle.info.id}: verified ${bundle.messages.length} seeded messages`,
-      );
-      return 0;
-    } finally {
-      await fs.rm(directory, { force: true, recursive: true });
+        if (
+          actual.info?.id !== bundle.info.id ||
+          actual.info?.location?.directory !== bundle.info.location.directory ||
+          !Array.isArray(actual.messages) ||
+          actual.messages.length < bundle.messages.length ||
+          bundle.messages.some((message, i) => {
+            const existing = actual.messages[i];
+            return (
+              existing?.id !== message.id ||
+              existing.type !== message.type ||
+              existing.time?.created !== message.time.created ||
+              (message.type === "user"
+                ? existing.text !== message.text
+                : JSON.stringify(existing.content) !==
+                  JSON.stringify(message.content))
+            );
+          })
+        )
+          throw new Error(
+            "OpenCode mirror differs from the source; no existing history was overwritten",
+          );
+        deps.stdout(
+          `OpenCode ${bundle.info.id}: verified ${bundle.messages.length} seeded messages`,
+        );
+      } finally {
+        await fs.rm(directory, { force: true, recursive: true });
+      }
+    };
+    if (tool === "codex") {
+      await seedLinkedCodexInOpenCode({
+        sourcePath,
+        cwd: project,
+        databasePath,
+        registryPath: resolveRegistryPath(homeDir),
+        importVerified,
+      });
+    } else {
+      await importVerified(await createOpenCodeSeed(tool, sourcePath, project));
     }
+    return 0;
   }
 
   if (command === "sync-opencode") {

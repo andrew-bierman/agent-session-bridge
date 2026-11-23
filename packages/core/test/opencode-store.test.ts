@@ -444,7 +444,10 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
           [
             {
               type: "session_meta",
-              payload: { id: "fresh-codex", cwd: project },
+              payload: {
+                id: "019cdef0-2584-7a14-8020-123456789abc",
+                cwd: project,
+              },
             },
             {
               timestamp: new Date(now).toISOString(),
@@ -512,6 +515,52 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         );
         expect(seed()).toContain(seededId);
         expect(inspectSeed()).toEqual(continued);
+        const syncSeed = () =>
+          execFileSync(
+            process.execPath,
+            [cli, "sync-opencode", seededId, path],
+            options,
+          );
+        expect(syncSeed()).toMatch(
+          /Codex 019cdef0-2584-7a14-8020-123456789abc: [1-9]\d* records appended/,
+        );
+        expect(syncSeed()).toMatch(
+          /Codex 019cdef0-2584-7a14-8020-123456789abc: 0 records appended/,
+        );
+        const importedHistory = readFileSync(source, "utf8");
+        expect(importedHistory.match(/Fresh imported answer/g)).toHaveLength(1);
+        expect(importedHistory).toContain("Offline continuation");
+        appendFileSync(
+          source,
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: "Turn on the original Codex session",
+                },
+              ],
+            },
+          }) + "\n",
+        );
+        expect(syncSeed()).toContain("1 messages appended");
+        expect(syncSeed()).toContain("0 messages appended");
+        expect(inspectSeed().messages.at(-1)?.text).toBe(
+          "Turn on the original Codex session",
+        );
+        const beforeEdit = inspectSeed();
+        const editedSource = readFileSync(source, "utf8").replace(
+          "Fresh imported context",
+          "Edited original context",
+        );
+        writeFileSync(source, editedSource);
+        expect(syncSeed).toThrow("Original Codex seed history diverged");
+        expect(inspectSeed()).toEqual(beforeEdit);
+        expect(readFileSync(source, "utf8")).toBe(editedSource);
       } finally {
         provider.closeAllConnections();
         await new Promise<void>((resolve) => provider.close(() => resolve()));

@@ -267,4 +267,8 @@ agent-session-bridge seed-opencode codex /path/to/rollout.jsonl /path/to/opencod
 Use `claude` or `pi` for those transcript formats. The command verifies the
 import by exporting the native session. An identical retry reuses the same
 ID. Changed source history is rejected if the mirror already exists. Seeding
-is a one-time import. Ongoing sync needs a separately established link.
+from Codex also links the original rollout by its native thread ID. Run
+`sync-opencode` with the ID printed by the seed command to exchange new
+text turns with that rollout. A changed seed prefix or independent turns
+on both sides stop sync. Seeding from Claude Code or Pi remains a
+one-time import.

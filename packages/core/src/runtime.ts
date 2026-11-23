@@ -1236,14 +1236,24 @@ export function syncSourceSessionToTargets(
   );
 }
 
-// shortcut: explicit linked Codex text sessions only, extend after richer turns are verified.
 // shortcut: seed text-only sessions until tool and attachment conversion is verified in OpenCode.
 export async function createOpenCodeSeed(
   tool: Exclude<ToolName, "opencode">,
   path: string,
   cwd: string,
 ) {
-  const snapshot = await loadSourceSessionSnapshot(tool, path);
+  return buildOpenCodeSeed(
+    tool,
+    await loadSourceSessionSnapshot(tool, path),
+    cwd,
+  );
+}
+
+function buildOpenCodeSeed(
+  tool: Exclude<ToolName, "opencode">,
+  snapshot: SourceSessionSnapshot,
+  cwd: string,
+) {
   if (!snapshot.chunks.length)
     throw new Error("Source session has no supported messages");
   const seed = `${tool}:${snapshot.sourceSessionId}`;
@@ -1312,6 +1322,116 @@ export async function createOpenCodeSeed(
   };
 }
 
+export async function seedLinkedCodexInOpenCode(params: {
+  sourcePath: string;
+  cwd: string;
+  databasePath: string;
+  registryPath: string;
+  importVerified: (
+    bundle: ReturnType<typeof buildOpenCodeSeed>,
+  ) => Promise<void>;
+}): Promise<void> {
+  await withRegistryWriteLock(params.registryPath, async () => {
+    const source = await loadSourceSessionSnapshot("codex", params.sourcePath);
+    if (!isCodexThreadId(source.sourceSessionId)) {
+      throw new Error("OpenCode sync requires a native Codex thread ID");
+    }
+    const bundle = buildOpenCodeSeed("codex", source, params.cwd);
+    const registry = await loadRegistry(params.registryPath, { readFile });
+    const linked = findConversationByNativeSession(
+      registry,
+      "codex",
+      source.sourceSessionId,
+    );
+    const existing = findConversationByNativeSession(
+      registry,
+      "opencode",
+      bundle.info.id,
+    );
+    if (
+      (linked?.mirrors.opencode &&
+        linked.mirrors.opencode.nativeId !== bundle.info.id) ||
+      (existing && existing.bridgeSessionId !== linked?.bridgeSessionId) ||
+      (linked && linked.canonicalCwd !== params.cwd) ||
+      (linked?.mirrors.codex?.sessionPath &&
+        linked.mirrors.codex.sessionPath !== params.sourcePath)
+    ) {
+      throw new Error(
+        "Source or destination already belongs to a different bridge link",
+      );
+    }
+    await params.importVerified(bundle);
+    if (existing) return;
+
+    const { projectKey, canonicalCwd } = await deriveProjectKey(params.cwd, {
+      realpath,
+      findRepoRoot: async (cwd) => findGitRepoRoot(cwd, { exists }),
+    });
+    const conversation =
+      linked ??
+      createConversation(
+        projectKey,
+        canonicalCwd,
+        "codex",
+        source.sourceSessionId,
+        params.sourcePath,
+        source.updatedAt,
+      );
+    const offset = source.chunks.at(-1)!.sourceOffset;
+    conversation.mirrors.codex!.seedPrefix = {
+      offset,
+      digest: sourcePrefixDigest(source, offset),
+    };
+    conversation.mirrors.opencode = {
+      sessionPath: params.databasePath,
+      nativeId: bundle.info.id,
+      seededSourceOffset: bundle.messages.length,
+      exportPrefix: {
+        count: bundle.messages.length,
+        digest: createHash("sha256")
+          .update(JSON.stringify(normalizeOpenCodeMessages(bundle.messages)))
+          .digest("hex"),
+        codexOffset: offset,
+        lastNativeOffset: 0,
+      },
+    };
+    await saveRegistry(
+      params.registryPath,
+      upsertConversation(registry, conversation),
+      {
+        mkdir: async (path, options) => {
+          await mkdir(path, options);
+        },
+        writeFile,
+        rename,
+      },
+    );
+  });
+}
+
+function sourcePrefixDigest(
+  snapshot: SourceSessionSnapshot,
+  offset: number,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        snapshot.chunks.filter((chunk) => chunk.sourceOffset <= offset),
+      ),
+    )
+    .digest("hex");
+}
+
+function verifySeedPrefix(
+  mirror: ToolMirror,
+  snapshot: SourceSessionSnapshot,
+): void {
+  const prefix = mirror.seedPrefix;
+  if (prefix && prefix.digest !== sourcePrefixDigest(snapshot, prefix.offset)) {
+    throw new Error("Original Codex seed history diverged");
+  }
+}
+
 async function returnCodexTurnsUnderLock(params: {
   registryPath: string;
   codexSessionId: string;
@@ -1328,7 +1448,7 @@ async function returnCodexTurnsUnderLock(params: {
   );
   const source = conversation?.mirrors.codex;
   const target = conversation?.mirrors.opencode;
-  if (!source || source.seededSourceOffset == null || !target?.exportPrefix) {
+  if (!source || !target?.exportPrefix) {
     throw new Error("Expected a Codex mirror seeded from an OpenCode export");
   }
   if (
@@ -1345,6 +1465,7 @@ async function returnCodexTurnsUnderLock(params: {
   const snapshot = await loadSourceSessionSnapshot("codex", source.sessionPath);
   if (snapshot.sourceSessionId !== params.codexSessionId)
     throw new Error("Codex session identity changed");
+  verifySeedPrefix(source, snapshot);
   const turns = snapshot.chunks.filter(
     (chunk) => chunk.sourceOffset > codexImportOffset(conversation),
   );
@@ -1552,37 +1673,40 @@ async function syncSourceSessionUnderLock(params: {
     );
     const codex = conversation.mirrors.codex;
     let codexOffset = codexImportOffset(conversation);
-    if (suffix.length && codex) {
+    if ((suffix.length || codex?.seedPrefix) && codex) {
       const codexSnapshot = await loadSourceSessionSnapshot(
         "codex",
         codex.sessionPath,
       );
       if (codexSnapshot.sourceSessionId !== codex.nativeId)
         throw new Error("Codex session identity changed");
+      verifySeedPrefix(codex, codexSnapshot);
       const pending = codexSnapshot.chunks.filter(
         (chunk) => chunk.sourceOffset > codexOffset,
       );
       if (
-        pending.length !== returned.length ||
-        pending.some((chunk, index) => {
-          const echo = returned[index]?.message;
-          return (
-            !echo ||
-            echo.id !==
-              returnedOpenCodeId(
-                codex.nativeId,
-                chunk.sourceOffset,
-                mirror.nativeId,
-              ) ||
-            echo.role !== chunk.message.role ||
-            echo.timestamp !== chunk.message.timestamp ||
-            JSON.stringify(echo.content) !==
-              JSON.stringify(chunk.message.content)
-          );
-        })
+        suffix.length > 0 &&
+        (pending.length !== returned.length ||
+          pending.some((chunk, index) => {
+            const echo = returned[index]?.message;
+            return (
+              !echo ||
+              echo.id !==
+                returnedOpenCodeId(
+                  codex.nativeId,
+                  chunk.sourceOffset,
+                  mirror.nativeId,
+                ) ||
+              echo.role !== chunk.message.role ||
+              echo.timestamp !== chunk.message.timestamp ||
+              JSON.stringify(echo.content) !==
+                JSON.stringify(chunk.message.content)
+            );
+          }))
       )
         throw new Error("OpenCode and Codex histories diverged");
-      codexOffset = pending.at(-1)?.sourceOffset ?? codexOffset;
+      if (suffix.length)
+        codexOffset = pending.at(-1)?.sourceOffset ?? codexOffset;
     } else if (returned.length) {
       throw new Error("OpenCode export contains unlinked returned turns");
     }
