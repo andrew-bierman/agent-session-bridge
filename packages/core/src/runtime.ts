@@ -1089,6 +1089,17 @@ async function appendToCodexMirror(
   nextWatermarks: BridgeConversation["lastWrittenOffsets"];
   finalCount: number;
 }> {
+  if (mirror.sessionPath.endsWith(".zst")) {
+    if (chunks.length)
+      throw new Error(
+        "Compressed Codex rollouts must be reopened in Codex before appending",
+      );
+    return {
+      appendedCount: 0,
+      nextWatermarks: watermarks,
+      finalCount: (await loadTargetCodexState(mirror.sessionPath)).count,
+    };
+  }
   let { count, hasMeta } = await loadTargetCodexState(mirror.sessionPath);
   let nextWatermarks = watermarks;
   let appendedCount = 0;

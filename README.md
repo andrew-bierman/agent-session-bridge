@@ -309,3 +309,6 @@ and reasoning text stay in the original transcript.
 Run `sync-opencode` with the ID printed by the seed command to exchange new
 text turns and settled tool history with that transcript. A changed seed prefix or independent turns
 on both sides stop sync.
+
+Compressed Codex rollouts can seed OpenCode. The bridge refuses to append
+new turns directly to the compressed file.

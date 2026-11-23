@@ -1,6 +1,7 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,6 +20,7 @@ import {
   readCodexRollout,
   readPiSession,
   syncSourceSessionToTargets,
+  seedLinkedSessionInOpenCode,
 } from "../src/index.js";
 
 const fixturesDir = join(import.meta.dirname, "fixtures");
@@ -898,4 +900,51 @@ CREATE TABLE threads (
     expect(indexedRow).toContain("Fix auth");
     expect(indexedRow).toContain("vscode");
   });
+});
+
+it("keeps compressed Codex rollouts byte-for-byte intact when OpenCode advances", async () => {
+  const { rootDir, homeDir, projectDir, registryPath } =
+    await makeTempWorkspace();
+  const cwd = await realpath(projectDir);
+  const sourcePath = join(rootDir, "rollout.jsonl.zst");
+  const original = zstdCompressSync(
+    await readFile(join(fixturesDir, "codex-rollout.jsonl")),
+  );
+  await writeFile(sourcePath, original);
+  const bundle = await seedLinkedSessionInOpenCode({
+    tool: "codex",
+    sourcePath,
+    cwd,
+    databasePath: join(rootDir, "opencode.db"),
+    registryPath,
+    importVerified: async () => {},
+  });
+  const exportPath = join(rootDir, "export.json");
+  const sync = () =>
+    syncSourceSessionToTargets({
+      sourceTool: "opencode",
+      sourcePath: exportPath,
+      targetTools: ["codex"],
+      registryPath,
+      homeDir,
+    });
+  await writeFile(exportPath, JSON.stringify(bundle));
+  expect((await sync()).writes[0]?.appendedCount).toBe(0);
+  await writeFile(
+    exportPath,
+    JSON.stringify({
+      ...bundle,
+      messages: [
+        ...bundle.messages,
+        {
+          id: "msg_new_turn",
+          type: "user",
+          time: { created: Date.now() },
+          text: "A new OpenCode question",
+        },
+      ],
+    }),
+  );
+  await expect(sync()).rejects.toThrow("Compressed Codex rollouts");
+  expect(await readFile(sourcePath)).toEqual(original);
 });
