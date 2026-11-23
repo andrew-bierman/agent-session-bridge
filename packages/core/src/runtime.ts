@@ -1268,6 +1268,76 @@ export async function createOpenCodeSeed(
   );
 }
 
+const importedOpenCodeModel = { providerID: "openai", id: "codex-import" };
+const importedOpenCodeTokens = {
+  input: 0,
+  output: 0,
+  reasoning: 0,
+  cache: { read: 0, write: 0 },
+};
+
+function renderOpenCodeHistory(
+  chunks: SourceMessageChunk[],
+  idForOffset: (offset: number) => string,
+) {
+  const pendingCalls = new Set<string>();
+  const messages = chunks.map(({ message, sourceOffset }) => {
+    const content = message.content.map((block) => {
+      if (block.type === "text") return block;
+      if (block.type === "tool_call") {
+        if (pendingCalls.has(block.id))
+          throw new Error("Duplicate tool call in OpenCode transcript");
+        pendingCalls.add(block.id);
+      } else if (block.type === "tool_result") {
+        if (!pendingCalls.delete(block.toolCallId))
+          throw new Error(
+            "Tool result without a matching call in OpenCode transcript",
+          );
+      } else {
+        throw new Error(
+          `Unsupported OpenCode transcript content: ${block.type}`,
+        );
+      }
+      return {
+        type: "text" as const,
+        text:
+          "Historical tool record (already settled): " + JSON.stringify(block),
+      };
+    });
+    if (!content.length)
+      throw new Error("Empty message in OpenCode transcript");
+    const id = idForOffset(sourceOffset);
+    const created = Date.parse(message.timestamp);
+    if (!Number.isFinite(created))
+      throw new Error("Invalid source message time");
+    return message.role === "user" &&
+      !message.content.every((item) => item.type === "tool_result")
+      ? {
+          id,
+          type: "user" as const,
+          time: { created },
+          text: content.map((item) => item.text).join("\n"),
+        }
+      : {
+          id,
+          type: "assistant" as const,
+          time: { created, completed: created },
+          agent: "build",
+          model: {
+            id: importedOpenCodeModel.id,
+            providerID: importedOpenCodeModel.providerID,
+          },
+          content,
+          finish: "stop",
+          cost: 0,
+          tokens: importedOpenCodeTokens,
+        };
+  });
+  if (pendingCalls.size)
+    throw new Error("Unsettled tool calls in OpenCode transcript");
+  return messages;
+}
+
 function buildOpenCodeSeed(
   tool: Exclude<ToolName, "opencode">,
   snapshot: SourceSessionSnapshot,
@@ -1277,63 +1347,11 @@ function buildOpenCodeSeed(
     throw new Error("Source session has no supported messages");
   const seed = `${tool}:${snapshot.sourceSessionId}`;
   const id = "ses_" + deterministicUuid(seed).replaceAll("-", "");
-  const model = { providerID: "openai", id: "codex-import" };
-  const tokens = {
-    input: 0,
-    output: 0,
-    reasoning: 0,
-    cache: { read: 0, write: 0 },
-  };
-  const pendingCalls = new Set<string>();
-  const messages = snapshot.chunks.map(({ message, sourceOffset }) => {
-    const content = message.content.map((block) => {
-      if (block.type === "text") return block;
-      if (block.type === "tool_call") {
-        if (pendingCalls.has(block.id))
-          throw new Error("Duplicate tool call in OpenCode seed");
-        pendingCalls.add(block.id);
-      } else if (block.type === "tool_result") {
-        if (!pendingCalls.delete(block.toolCallId))
-          throw new Error(
-            "Tool result without a matching call in OpenCode seed",
-          );
-      } else {
-        throw new Error(`Unsupported OpenCode seed content: ${block.type}`);
-      }
-      return {
-        type: "text" as const,
-        text:
-          "Historical tool record (already settled): " + JSON.stringify(block),
-      };
-    });
-    if (!content.length) throw new Error("Empty message in OpenCode seed");
-    const messageId =
-      "msg_" + deterministicUuid(`${seed}:${sourceOffset}`).replaceAll("-", "");
-    const created = Date.parse(message.timestamp);
-    if (!Number.isFinite(created))
-      throw new Error("Invalid source message time");
-    return message.role === "user" &&
-      !message.content.every((item) => item.type === "tool_result")
-      ? {
-          id: messageId,
-          type: "user",
-          time: { created },
-          text: content.map((item) => item.text).join("\n"),
-        }
-      : {
-          id: messageId,
-          type: "assistant",
-          time: { created, completed: created },
-          agent: "build",
-          model,
-          tokens,
-          cost: 0,
-          finish: "stop",
-          content,
-        };
-  });
-  if (pendingCalls.size)
-    throw new Error("Unsettled tool calls in OpenCode seed");
+  const messages = renderOpenCodeHistory(
+    snapshot.chunks,
+    (sourceOffset) =>
+      "msg_" + deterministicUuid(`${seed}:${sourceOffset}`).replaceAll("-", ""),
+  );
   const created = messages[0]!.time.created;
   return {
     info: {
@@ -1341,8 +1359,8 @@ function buildOpenCodeSeed(
       projectID: "global",
       title: "Imported " + tool + " conversation",
       agent: "build",
-      model,
-      tokens,
+      model: importedOpenCodeModel,
+      tokens: importedOpenCodeTokens,
       cost: 0,
       location: { directory: cwd },
       time: {
@@ -1542,45 +1560,13 @@ async function returnLinkedTurnsUnderLock(params: {
   const existing = rows.slice(count);
   if (existing.length > turns.length)
     throw new Error("OpenCode history diverged");
+  const records = renderOpenCodeHistory(turns, (offset) =>
+    returnedOpenCodeId(source.nativeId, offset, target.nativeId),
+  );
   const pending = [];
-  for (const [index, { message, sourceOffset }] of turns.entries()) {
-    if (
-      message.role === "tool" ||
-      !message.content.length ||
-      message.content.some((block) => block.type !== "text")
-    ) {
-      throw new Error("Only text turns can be returned to OpenCode");
-    }
-    const id = returnedOpenCodeId(
-      source.nativeId,
-      sourceOffset,
-      target.nativeId,
-    );
-    const time = Date.parse(message.timestamp);
-    const type = message.role;
-    const data = JSON.stringify(
-      type === "user"
-        ? {
-            time: { created: time },
-            text: message.content
-              .map((block) => (block.type === "text" ? block.text : ""))
-              .join("\n"),
-          }
-        : {
-            time: { created: time, completed: time },
-            agent: "build",
-            model: { id: "codex-import", providerID: "openai" },
-            content: message.content,
-            finish: "stop",
-            cost: 0,
-            tokens: {
-              input: 0,
-              output: 0,
-              reasoning: 0,
-              cache: { read: 0, write: 0 },
-            },
-          },
-    );
+  for (const [index, { id, type, ...body }] of records.entries()) {
+    const time = body.time.created;
+    const data = JSON.stringify(body);
     const prior = existing[index];
     if (prior) {
       if (prior.id !== id || prior.type !== type || prior.data !== data)
@@ -1744,29 +1730,32 @@ async function syncSourceSessionUnderLock(params: {
       const pending = linkedSnapshot.chunks.filter(
         (chunk) => chunk.sourceOffset > linkedOffset,
       );
-      if (
-        suffix.length > 0 &&
-        (pending.length !== returned.length ||
-          pending.some((chunk, index) => {
-            const echo = returned[index]?.message;
-            return (
-              !echo ||
-              echo.id !==
-                returnedOpenCodeId(
-                  linkedMirror.nativeId,
-                  chunk.sourceOffset,
-                  mirror.nativeId,
-                ) ||
-              echo.role !== chunk.message.role ||
-              echo.timestamp !== chunk.message.timestamp ||
-              JSON.stringify(echo.content) !==
-                JSON.stringify(chunk.message.content)
-            );
-          }))
-      )
-        throw new Error(
-          `OpenCode and ${tool === "codex" ? "Codex" : tool} histories diverged`,
-        );
+      if (suffix.length) {
+        const expected =
+          pending.length === returned.length
+            ? normalizeOpenCodeMessages(
+                renderOpenCodeHistory(pending, (offset) =>
+                  returnedOpenCodeId(
+                    linkedMirror.nativeId,
+                    offset,
+                    mirror.nativeId,
+                  ),
+                ),
+              )
+            : [];
+        if (
+          pending.length !== returned.length ||
+          expected.some(
+            ({ message }, index) =>
+              JSON.stringify(message) !==
+              JSON.stringify(returned[index]?.message),
+          )
+        ) {
+          throw new Error(
+            `OpenCode and ${tool === "codex" ? "Codex" : tool} histories diverged`,
+          );
+        }
+      }
       if (suffix.length)
         linkedOffset = pending.at(-1)?.sourceOffset ?? linkedOffset;
     } else if (returned.length) {

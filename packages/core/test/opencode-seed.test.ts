@@ -271,6 +271,34 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
     expect(
       readFileSync(path, "utf8").match(/New original-harness answer/g),
     ).toHaveLength(1);
+    const beforeTools = readFileSync(path, "utf8");
+    const [call, resultRecord] = readFileSync(rich, "utf8")
+      .trim()
+      .replaceAll("rich-claude-session", nativeId)
+      .replaceAll("claude-assistant-1", "claude-assistant-new")
+      .replaceAll("bbbb2222", "bbbb3333")
+      .split("\n")
+      .slice(-2);
+    const beforeUnsettled = exported();
+    writeFileSync(path, beforeTools + call + "\n");
+    expect(sync).toThrow("Unsettled tool calls");
+    expect(exported()).toEqual(beforeUnsettled);
+    writeFileSync(path, beforeTools + call + "\n" + resultRecord + "\n");
+    expect(sync()).toContain("2 messages appended");
+    expect(sync()).toContain("0 messages appended");
+    expect(
+      exported()
+        .messages.slice(-2)
+        .map((message: { content: { type: string }[] }) =>
+          message.content.map((block) => block.type),
+        ),
+    ).toEqual([["text", "text"], ["text"]]);
+    expect(exported().messages.at(-1)?.content).toEqual([
+      { type: "text", text: expect.stringContaining("file contents") },
+    ]);
+    expect(readFileSync(path, "utf8")).toBe(
+      beforeTools + call + "\n" + resultRecord + "\n",
+    );
   },
   60000,
 );
