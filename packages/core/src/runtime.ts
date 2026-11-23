@@ -1306,6 +1306,11 @@ function renderOpenCodeHistory(
       if (block.type === "text") return block;
       if (block.type === "thinking")
         return { type: "text" as const, text: "[Source reasoning omitted]" };
+      if (block.type === "image")
+        return {
+          type: "text" as const,
+          text: "[Source image omitted; see the original session]",
+        };
       let issue: string | undefined;
       if (block.type === "tool_call") {
         if (pendingCalls.has(block.id)) issue = "Duplicate tool call";
@@ -1313,10 +1318,6 @@ function renderOpenCodeHistory(
       } else if (block.type === "tool_result") {
         if (!pendingCalls.delete(block.toolCallId))
           issue = "Tool result without a matching call";
-      } else {
-        throw new Error(
-          `Unsupported OpenCode transcript content: ${block.type}`,
-        );
       }
       if (issue && !allowIncompleteTools)
         throw new IncompleteOpenCodeToolHistory(
@@ -1373,11 +1374,11 @@ function buildOpenCodeSeed(
   cwd: string,
   allowIncompleteTools = false,
 ) {
+  if (!snapshot.chunks.length)
+    throw new Error("Source session has no supported messages");
   if (tool === "codex" && !isCodexThreadId(snapshot.sourceSessionId)) {
     throw new Error("OpenCode sync requires a native Codex thread ID");
   }
-  if (!snapshot.chunks.length)
-    throw new Error("Source session has no supported messages");
   const seed = `${tool}:${snapshot.sourceSessionId}`;
   const id = "ses_" + deterministicUuid(seed).replaceAll("-", "");
   const idForOffset = (offset: number) =>

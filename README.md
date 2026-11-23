@@ -303,8 +303,9 @@ It preserves settled tool calls and results as historical text. Append
 `--allow-incomplete-tools` to preview or import older transcripts that contain
 unmatched or ambiguous calls or results. In those imports, tool records are
 labeled as unverified historical text. Ongoing sync still waits for a complete
-pair in newly appended tool history. Attachments are rejected when detected. Reasoning and
-empty messages are marked in the imported transcript without copying reasoning text.
+pair in newly appended tool history. Detected image attachments, reasoning,
+and empty messages are marked in the imported transcript. Image payloads
+and reasoning text stay in the original transcript.
 Run `sync-opencode` with the ID printed by the seed command to exchange new
 text turns and settled tool history with that transcript. A changed seed prefix or independent turns
 on both sides stop sync.

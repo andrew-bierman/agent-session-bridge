@@ -165,6 +165,29 @@ it("previews Claude tool records repeated in the same transcript once", async ()
   );
 });
 
+it("preserves the prompt around an image without copying image data into OpenCode", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-image-marker-"));
+  const path = textTranscript("pi", "pi-session.jsonl");
+  const records = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  records[1].message.content = [
+    { type: "text", text: "Review this image" },
+    { type: "image", mimeType: "image/png", data: "private-image-payload" },
+  ];
+  writeFileSync(
+    path,
+    records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+  const bundle = await createOpenCodeSeed("pi", path, root);
+  expect(bundle.messages[0]).toMatchObject({
+    type: "user",
+    text: "Review this image\n[Source image omitted; see the original session]",
+  });
+  expect(JSON.stringify(bundle)).not.toContain("private-image-payload");
+});
+
 it("retains Pi text and marks reasoning and empty records without copying private reasoning", async () => {
   root = mkdtempSync(join(tmpdir(), "bridge-seed-reasoning-"));
   const path = textTranscript("pi", "pi-session.jsonl");
