@@ -970,4 +970,25 @@ it("keeps compressed Codex rollouts byte-for-byte intact when OpenCode advances"
   expect(await readFile(writable, "utf8")).toContain("A new OpenCode question");
   expect((await sync()).writes[0]?.appendedCount).toBe(0);
   expect(await readFile(sourcePath)).toEqual(original);
+  const crossHarness = () =>
+    syncSourceSessionToTargets({
+      sourceTool: "opencode",
+      sourcePath: exportPath,
+      registryPath,
+      homeDir,
+    });
+  const mirrors = await crossHarness();
+  expect(
+    mirrors.writes.find((write) => write.targetTool === "codex")?.appendedCount,
+  ).toBe(0);
+  for (const tool of ["pi", "claude"]) {
+    const mirror = mirrors.writes.find((write) => write.targetTool === tool)!;
+    const history = await readFile(mirror.sessionPath, "utf8");
+    expect(history).toContain("Fix auth");
+    expect(history).toContain("file contents");
+    expect(history).toContain("A new OpenCode question");
+  }
+  expect(
+    (await crossHarness()).writes.every((write) => write.appendedCount === 0),
+  ).toBe(true);
 });

@@ -223,6 +223,8 @@ agent-session-bridge import-opencode --database /path/to/copy.db --dry-run
 
 Remove `--dry-run` to write native mirrors. The OpenCode database is opened
 read-only. Sessions with no importable messages are reported individually.
+New mirrors in another harness receive the original conversation when
+creating them from a seeded OpenCode session.
 
 Use a fresh export of the same session to pick up new text messages. Identical
 exports do not duplicate messages. Settled tool calls with text results are

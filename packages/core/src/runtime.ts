@@ -2092,6 +2092,12 @@ async function syncSourceSessionUnderLock(params: {
   const writes: SyncWriteResult[] = [];
 
   for (const targetTool of targetTools) {
+    const seedTool = conversation.mirrors.opencode?.seedTool;
+    const initialCrossHarnessHistory =
+      params.sourceTool === "opencode" &&
+      seedTool &&
+      targetTool !== seedTool &&
+      !conversation.mirrors[targetTool];
     const mirror = await ensureTargetMirror(
       conversation,
       targetTool,
@@ -2113,9 +2119,9 @@ async function syncSourceSessionUnderLock(params: {
       targetTool,
       mirror.nativeId,
     );
-    const targetChunks = authoredSourceChunks.filter(
-      (chunk) => chunk.sourceOffset > targetSourceOffset,
-    );
+    const targetChunks = (
+      initialCrossHarnessHistory ? snapshot.chunks : authoredSourceChunks
+    ).filter((chunk) => chunk.sourceOffset > targetSourceOffset);
 
     const writeResult =
       targetTool === "pi"
