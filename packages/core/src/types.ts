@@ -16,10 +16,12 @@ export interface ToolMirror {
   sessionPath: string;
   nativeId: string;
   seededSourceOffset?: number;
+  seedTool?: Exclude<ToolName, "opencode">;
   seedPrefix?: { offset: number; digest: string };
   exportPrefix?: {
     count: number;
     digest: string;
+    linkedOffset?: number;
     codexOffset?: number;
     lastNativeOffset?: number;
   };

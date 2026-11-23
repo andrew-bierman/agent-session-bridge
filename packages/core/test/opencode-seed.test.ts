@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import {
+  appendOpenCodeMessages,
+  readOpenCodeRows,
+} from "../src/opencode-store.js";
 import { createOpenCodeSeed } from "../src/runtime.js";
 
 const fixtures = [
@@ -75,7 +79,7 @@ it.each(fixtures)(
 );
 
 it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
-  "natively imports %s once and rejects edits to the already imported history",
+  "seeds and syncs %s under its original ID without duplicating history",
   (tool, name) => {
     root = mkdtempSync(join(tmpdir(), "bridge-native-seed-"));
     const path = textTranscript(tool, name);
@@ -126,12 +130,82 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
     ).toEqual(expectedTurns);
     expect(seed()).toBe(result);
     expect(exported()).toEqual(first);
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8").replace("Fix auth", "Edited prompt"),
-    );
+    const original = readFileSync(path, "utf8");
+    writeFileSync(path, original.replace("Fix auth", "Edited prompt"));
     expect(seed).toThrow("OpenCode mirror differs from the source");
     expect(exported()).toEqual(first);
+    writeFileSync(path, original);
+    const firstRecord = JSON.parse(original.split("\n")[0]!);
+    const nativeId =
+      firstRecord.payload?.id ?? firstRecord.sessionId ?? firstRecord.id;
+    const sync = () => run(bridge, "sync-opencode", id!, database);
+    const version = run("opencode", "--version")
+      .trim()
+      .replace(/^opencode v/, "");
+    const { rows, cursor } = readOpenCodeRows(database, version, id!);
+    const created = Date.parse("2026-04-05T10:00:03.000Z");
+    appendOpenCodeMessages(database, version, id!, rows, [
+      {
+        id: "msg_0000000000000000000000000000009",
+        type: "user",
+        seq: cursor + 1,
+        time_created: created,
+        time_updated: created,
+        data: JSON.stringify({
+          time: { created },
+          text: "New OpenCode prompt",
+        }),
+      },
+    ]);
+    expect(sync()).toContain(`${nativeId}:`);
+    expect(sync()).toContain("0 records appended");
+    const synced = readFileSync(path, "utf8");
+    expect(synced.match(/New OpenCode prompt/g)).toHaveLength(
+      tool === "codex" ? 2 : 1,
+    );
+    expect(synced.match(/Fix auth/g)).toHaveLength(1);
+    const timestamp = "2026-04-05T10:00:04.000Z";
+    const reply = "New original-harness answer";
+    const nativeRecord =
+      tool === "codex"
+        ? {
+            type: "response_item",
+            timestamp,
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: reply }],
+            },
+          }
+        : tool === "claude"
+          ? {
+              type: "assistant",
+              timestamp,
+              uuid: "native-reply",
+              sessionId: nativeId,
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: reply }],
+              },
+            }
+          : {
+              type: "message",
+              timestamp,
+              id: "12345678",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: reply }],
+              },
+            };
+    writeFileSync(path, synced + JSON.stringify(nativeRecord) + "\n");
+    expect(sync()).toContain("1 messages appended");
+    expect(sync()).toContain("0 messages appended");
+    expect(exported().messages.at(-1)?.content).toEqual([
+      { type: "text", text: reply },
+    ]);
+    expect(
+      readFileSync(path, "utf8").match(/New original-harness answer/g),
+    ).toHaveLength(1);
   },
   60000,
 );

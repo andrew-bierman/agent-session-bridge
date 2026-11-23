@@ -1183,16 +1183,21 @@ function returnedOpenCodeId(
   );
 }
 
-function codexImportOffset(conversation: BridgeConversation): number {
+function linkedImportOffset(
+  conversation: BridgeConversation,
+  tool: Exclude<ToolName, "opencode">,
+): number {
+  const prefix = conversation.mirrors.opencode?.exportPrefix;
   return conversation.lastWrittenOffsets.reduce(
     (offset, watermark) =>
       watermark.sourceTool === "opencode" &&
-      watermark.targetTool === "codex" &&
-      watermark.targetSessionId === conversation.mirrors.codex?.nativeId
+      watermark.targetTool === tool &&
+      watermark.targetSessionId === conversation.mirrors[tool]?.nativeId
         ? Math.max(offset, watermark.targetOffset)
         : offset,
-    conversation.mirrors.opencode?.exportPrefix?.codexOffset ??
-      conversation.mirrors.codex?.seededSourceOffset ??
+    prefix?.linkedOffset ??
+      (tool === "codex" ? prefix?.codexOffset : undefined) ??
+      conversation.mirrors[tool]?.seededSourceOffset ??
       0,
   );
 }
@@ -1220,12 +1225,27 @@ async function withRegistryWriteLock<T>(
   }
 }
 
-export function returnCodexTurnsToOpenCode(
-  params: Parameters<typeof returnCodexTurnsUnderLock>[0],
+export function returnLinkedTurnsToOpenCode(
+  params: Parameters<typeof returnLinkedTurnsUnderLock>[0],
 ): Promise<number> {
   return withRegistryWriteLock(params.registryPath, () =>
-    returnCodexTurnsUnderLock(params),
+    returnLinkedTurnsUnderLock(params),
   );
+}
+
+export function returnCodexTurnsToOpenCode(
+  params: Omit<
+    Parameters<typeof returnLinkedTurnsUnderLock>[0],
+    "tool" | "sessionId"
+  > & {
+    codexSessionId: string;
+  },
+): Promise<number> {
+  return returnLinkedTurnsToOpenCode({
+    ...params,
+    tool: "codex",
+    sessionId: params.codexSessionId,
+  });
 }
 
 export function syncSourceSessionToTargets(
@@ -1322,7 +1342,8 @@ function buildOpenCodeSeed(
   };
 }
 
-export async function seedLinkedCodexInOpenCode(params: {
+export async function seedLinkedSessionInOpenCode(params: {
+  tool: Exclude<ToolName, "opencode">;
   sourcePath: string;
   cwd: string;
   databasePath: string;
@@ -1332,15 +1353,16 @@ export async function seedLinkedCodexInOpenCode(params: {
   ) => Promise<void>;
 }): Promise<void> {
   await withRegistryWriteLock(params.registryPath, async () => {
-    const source = await loadSourceSessionSnapshot("codex", params.sourcePath);
-    if (!isCodexThreadId(source.sourceSessionId)) {
+    const { tool } = params;
+    const source = await loadSourceSessionSnapshot(tool, params.sourcePath);
+    if (tool === "codex" && !isCodexThreadId(source.sourceSessionId)) {
       throw new Error("OpenCode sync requires a native Codex thread ID");
     }
-    const bundle = buildOpenCodeSeed("codex", source, params.cwd);
+    const bundle = buildOpenCodeSeed(tool, source, params.cwd);
     const registry = await loadRegistry(params.registryPath, { readFile });
     const linked = findConversationByNativeSession(
       registry,
-      "codex",
+      tool,
       source.sourceSessionId,
     );
     const existing = findConversationByNativeSession(
@@ -1353,8 +1375,8 @@ export async function seedLinkedCodexInOpenCode(params: {
         linked.mirrors.opencode.nativeId !== bundle.info.id) ||
       (existing && existing.bridgeSessionId !== linked?.bridgeSessionId) ||
       (linked && linked.canonicalCwd !== params.cwd) ||
-      (linked?.mirrors.codex?.sessionPath &&
-        linked.mirrors.codex.sessionPath !== params.sourcePath)
+      (linked?.mirrors[tool]?.sessionPath &&
+        linked.mirrors[tool].sessionPath !== params.sourcePath)
     ) {
       throw new Error(
         "Source or destination already belongs to a different bridge link",
@@ -1372,17 +1394,18 @@ export async function seedLinkedCodexInOpenCode(params: {
       createConversation(
         projectKey,
         canonicalCwd,
-        "codex",
+        tool,
         source.sourceSessionId,
         params.sourcePath,
         source.updatedAt,
       );
     const offset = source.chunks.at(-1)!.sourceOffset;
-    conversation.mirrors.codex!.seedPrefix = {
+    conversation.mirrors[tool]!.seedPrefix = {
       offset,
       digest: sourcePrefixDigest(source, offset),
     };
     conversation.mirrors.opencode = {
+      seedTool: tool,
       sessionPath: params.databasePath,
       nativeId: bundle.info.id,
       seededSourceOffset: bundle.messages.length,
@@ -1391,7 +1414,7 @@ export async function seedLinkedCodexInOpenCode(params: {
         digest: createHash("sha256")
           .update(JSON.stringify(normalizeOpenCodeMessages(bundle.messages)))
           .digest("hex"),
-        codexOffset: offset,
+        linkedOffset: offset,
         lastNativeOffset: 0,
       },
     };
@@ -1428,13 +1451,16 @@ function verifySeedPrefix(
 ): void {
   const prefix = mirror.seedPrefix;
   if (prefix && prefix.digest !== sourcePrefixDigest(snapshot, prefix.offset)) {
-    throw new Error("Original Codex seed history diverged");
+    throw new Error(
+      `Original ${snapshot.sourceTool === "codex" ? "Codex" : snapshot.sourceTool} seed history diverged`,
+    );
   }
 }
 
-async function returnCodexTurnsUnderLock(params: {
+async function returnLinkedTurnsUnderLock(params: {
   registryPath: string;
-  codexSessionId: string;
+  tool: Exclude<ToolName, "opencode">;
+  sessionId: string;
   databasePath: string;
   version: string;
 }): Promise<number> {
@@ -1443,31 +1469,41 @@ async function returnCodexTurnsUnderLock(params: {
   const registry = await loadRegistry(params.registryPath, { readFile });
   const conversation = findConversationByNativeSession(
     registry,
-    "codex",
-    params.codexSessionId,
+    params.tool,
+    params.sessionId,
   );
-  const source = conversation?.mirrors.codex;
+  const source = conversation?.mirrors[params.tool];
   const target = conversation?.mirrors.opencode;
-  if (!source || !target?.exportPrefix) {
-    throw new Error("Expected a Codex mirror seeded from an OpenCode export");
+  if (
+    !source ||
+    !target?.exportPrefix ||
+    (target.seedTool ?? "codex") !== params.tool
+  ) {
+    throw new Error("Expected a linked OpenCode session");
   }
   if (
     getMaxSyncedSourceOffset(
       conversation.lastWrittenOffsets,
       "opencode",
       target.nativeId,
-      "codex",
+      params.tool,
       source.nativeId,
     ) !== (target.exportPrefix.lastNativeOffset ?? target.exportPrefix.count)
   ) {
-    throw new Error("Codex must contain the latest imported OpenCode history");
+    throw new Error(
+      "Linked session must contain the latest imported OpenCode history",
+    );
   }
-  const snapshot = await loadSourceSessionSnapshot("codex", source.sessionPath);
-  if (snapshot.sourceSessionId !== params.codexSessionId)
-    throw new Error("Codex session identity changed");
+  const snapshot = await loadSourceSessionSnapshot(
+    params.tool,
+    source.sessionPath,
+  );
+  if (snapshot.sourceSessionId !== params.sessionId)
+    throw new Error("Linked session identity changed");
   verifySeedPrefix(source, snapshot);
   const turns = snapshot.chunks.filter(
-    (chunk) => chunk.sourceOffset > codexImportOffset(conversation),
+    (chunk) =>
+      chunk.sourceOffset > linkedImportOffset(conversation, params.tool),
   );
   const { rows, cursor } = readOpenCodeRows(
     params.databasePath,
@@ -1498,7 +1534,7 @@ async function returnCodexTurnsUnderLock(params: {
       !message.content.length ||
       message.content.some((block) => block.type !== "text")
     ) {
-      throw new Error("Only Codex text turns can be returned to OpenCode");
+      throw new Error("Only text turns can be returned to OpenCode");
     }
     const id = returnedOpenCodeId(
       source.nativeId,
@@ -1671,18 +1707,27 @@ async function syncSourceSessionUnderLock(params: {
     const returned = suffix.filter(({ message }) =>
       message.id.startsWith(returnedOpenCodePrefix),
     );
-    const codex = conversation.mirrors.codex;
-    let codexOffset = codexImportOffset(conversation);
-    if ((suffix.length || codex?.seedPrefix) && codex) {
-      const codexSnapshot = await loadSourceSessionSnapshot(
-        "codex",
-        codex.sessionPath,
+    const tool = mirror.seedTool ?? "codex";
+    const linkedMirror = conversation.mirrors[tool];
+    if (
+      mirror.seedTool &&
+      params.targetTools &&
+      !params.targetTools.includes(tool)
+    )
+      throw new Error(
+        `OpenCode seed must sync with its original ${tool} session`,
       );
-      if (codexSnapshot.sourceSessionId !== codex.nativeId)
-        throw new Error("Codex session identity changed");
-      verifySeedPrefix(codex, codexSnapshot);
-      const pending = codexSnapshot.chunks.filter(
-        (chunk) => chunk.sourceOffset > codexOffset,
+    let linkedOffset = linkedImportOffset(conversation, tool);
+    if ((suffix.length || linkedMirror?.seedPrefix) && linkedMirror) {
+      const linkedSnapshot = await loadSourceSessionSnapshot(
+        tool,
+        linkedMirror.sessionPath,
+      );
+      if (linkedSnapshot.sourceSessionId !== linkedMirror.nativeId)
+        throw new Error("Linked session identity changed");
+      verifySeedPrefix(linkedMirror, linkedSnapshot);
+      const pending = linkedSnapshot.chunks.filter(
+        (chunk) => chunk.sourceOffset > linkedOffset,
       );
       if (
         suffix.length > 0 &&
@@ -1693,7 +1738,7 @@ async function syncSourceSessionUnderLock(params: {
               !echo ||
               echo.id !==
                 returnedOpenCodeId(
-                  codex.nativeId,
+                  linkedMirror.nativeId,
                   chunk.sourceOffset,
                   mirror.nativeId,
                 ) ||
@@ -1704,9 +1749,11 @@ async function syncSourceSessionUnderLock(params: {
             );
           }))
       )
-        throw new Error("OpenCode and Codex histories diverged");
+        throw new Error(
+          `OpenCode and ${tool === "codex" ? "Codex" : tool} histories diverged`,
+        );
       if (suffix.length)
-        codexOffset = pending.at(-1)?.sourceOffset ?? codexOffset;
+        linkedOffset = pending.at(-1)?.sourceOffset ?? linkedOffset;
     } else if (returned.length) {
       throw new Error("OpenCode export contains unlinked returned turns");
     }
@@ -1716,7 +1763,7 @@ async function syncSourceSessionUnderLock(params: {
     mirror.exportPrefix = {
       count: snapshot.rawMessageCount!,
       digest: digest(snapshot.rawMessageCount!),
-      codexOffset,
+      linkedOffset,
       lastNativeOffset: authoredSourceChunks.at(-1)?.sourceOffset ?? 0,
     };
   }

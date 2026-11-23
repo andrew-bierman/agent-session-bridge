@@ -11,7 +11,8 @@ import {
   backfillCodexThreadIndex,
   createDefaultConfig,
   createOpenCodeSeed,
-  seedLinkedCodexInOpenCode,
+  seedLinkedSessionInOpenCode,
+  returnLinkedTurnsToOpenCode,
   findConversationByBridgeSessionId,
   findConversationByNativeSession,
   findConversationByProjectKey,
@@ -1582,17 +1583,14 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         await fs.rm(directory, { force: true, recursive: true });
       }
     };
-    if (tool === "codex") {
-      await seedLinkedCodexInOpenCode({
-        sourcePath,
-        cwd: project,
-        databasePath,
-        registryPath: resolveRegistryPath(homeDir),
-        importVerified,
-      });
-    } else {
-      await importVerified(await createOpenCodeSeed(tool, sourcePath, project));
-    }
+    await seedLinkedSessionInOpenCode({
+      tool,
+      sourcePath,
+      cwd: project,
+      databasePath,
+      registryPath: resolveRegistryPath(homeDir),
+      importVerified,
+    });
     return 0;
   }
 
@@ -1637,28 +1635,30 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       const source = await loadSourceSessionSnapshot("opencode", sourcePath);
       if (source.sourceSessionId !== id)
         throw new Error("OpenCode export session identity changed");
-      const existing = findConversationByNativeSession(registry, "opencode", id)
-        ?.mirrors.codex;
+      const linked = findConversationByNativeSession(registry, "opencode", id);
+      const tool = linked?.mirrors.opencode?.seedTool ?? "codex";
+      const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
       const registryPath = resolveRegistryPath(homeDir);
       const result = await syncSourceSessionToTargets({
         sourceTool: "opencode",
         sourcePath,
-        targetTools: ["codex"],
+        targetTools: [tool],
         registryPath,
         homeDir,
       });
       const write = result.writes[0]!;
       const returned =
-        existing && write.appendedCount === 0
-          ? await returnCodexTurnsToOpenCode({
+        linked?.mirrors[tool] && write.appendedCount === 0
+          ? await returnLinkedTurnsToOpenCode({
               registryPath,
-              codexSessionId: write.targetSessionId,
+              tool,
+              sessionId: write.targetSessionId,
               databasePath,
               version,
             })
           : 0;
       deps.stdout(
-        `Codex ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
+        `${label} ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
       );
       return 0;
     } finally {
