@@ -1736,6 +1736,26 @@ function verifySeedPrefix(
   }
 }
 
+async function resolveLinkedSessionPath(
+  tool: Exclude<ToolName, "opencode">,
+  mirror: ToolMirror,
+): Promise<string> {
+  if (
+    tool !== "codex" ||
+    !mirror.seedPrefix ||
+    !mirror.sessionPath.endsWith(".jsonl.zst")
+  )
+    return mirror.sessionPath;
+  const reopened = mirror.sessionPath.slice(0, -4);
+  const candidate = await lstat(reopened).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  return candidate?.isFile() ? reopened : mirror.sessionPath;
+}
+
 async function returnLinkedTurnsUnderLock(params: {
   registryPath: string;
   tool: Exclude<ToolName, "opencode">;
@@ -1777,7 +1797,7 @@ async function returnLinkedTurnsUnderLock(params: {
   }
   const snapshot = await loadSourceSessionSnapshot(
     params.tool,
-    source.sessionPath,
+    await resolveLinkedSessionPath(params.tool, source),
   );
   if (snapshot.sourceSessionId !== params.sessionId)
     throw new Error("Linked session identity changed");
@@ -2015,21 +2035,7 @@ async function syncSourceSessionUnderLock(params: {
       );
     let linkedOffset = linkedImportOffset(conversation, tool);
     if ((suffix.length || linkedMirror?.seedPrefix) && linkedMirror) {
-      let linkedPath = linkedMirror.sessionPath;
-      if (
-        tool === "codex" &&
-        linkedMirror.seedPrefix &&
-        linkedPath.endsWith(".jsonl.zst")
-      ) {
-        const reopened = linkedPath.slice(0, -4);
-        const candidate = await lstat(reopened).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return undefined;
-            throw error;
-          },
-        );
-        if (candidate?.isFile()) linkedPath = reopened;
-      }
+      const linkedPath = await resolveLinkedSessionPath(tool, linkedMirror);
       const linkedSnapshot = await loadSourceSessionSnapshot(tool, linkedPath);
       if (linkedSnapshot.sourceSessionId !== linkedMirror.nativeId)
         throw new Error("Linked session identity changed");

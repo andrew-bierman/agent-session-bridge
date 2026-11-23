@@ -14,6 +14,7 @@ import {
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { zstdCompressSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -574,10 +575,14 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
             .map((record) => JSON.stringify(record))
             .join("\n") + "\n",
         );
+        const archive = source + ".zst";
+        const original = readFileSync(source);
+        writeFileSync(archive, zstdCompressSync(original));
+        rmSync(source);
         const seed = () =>
           execFileSync(
             process.execPath,
-            [cli, "seed-opencode", "codex", source, path],
+            [cli, "seed-opencode", "codex", archive, path],
             options,
           );
         const seededId = seed().match(
@@ -587,6 +592,17 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         const inspectSeed = () =>
           JSON.parse(opencode("session", "export", "--standalone", seededId));
         const seeded = inspectSeed();
+        expect(seed()).toContain(seededId);
+        expect(inspectSeed()).toEqual(seeded);
+        writeFileSync(source, original);
+        rmSync(archive);
+        const outboundBeforeRelink = execFileSync(
+          process.execPath,
+          [cli, "sync-opencode", seededId, path, "--outbound-only"],
+          options,
+        );
+        expect(outboundBeforeRelink).toContain("0 messages appended");
+
         modelRequest = "";
         await promisify(execFile)(
           "opencode",
@@ -612,8 +628,6 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(JSON.stringify(continued.messages.slice(2))).toContain(
           "Offline continuation",
         );
-        expect(seed()).toContain(seededId);
-        expect(inspectSeed()).toEqual(continued);
         const syncSeed = () =>
           execFileSync(
             process.execPath,
