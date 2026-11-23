@@ -15,7 +15,7 @@ import {
   createOpenCodeSeed,
   seedLinkedSessionInOpenCode,
   readSeedSourceId,
-  returnLinkedTurnsToOpenCode,
+  syncOpenCodeSession,
   findConversationByBridgeSessionId,
   findConversationByNativeSession,
   findConversationByProjectKey,
@@ -1775,49 +1775,17 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     if (version !== "2.3.0" && version !== "2.3.2")
       throw new Error("Unsupported OpenCode version");
     const sync = async (id: string) => {
-      const linked = findConversationByNativeSession(registry, "opencode", id);
-      const linkedDatabase = linked?.mirrors.opencode?.openCodeDatabasePath;
-      if (linkedDatabase && linkedDatabase !== databasePath)
-        throw new Error("OpenCode session is linked to a different database");
-      const directory = await fs.mkdtemp(
-        join(tmpdir(), "bridge-opencode-export-"),
+      const { tool, write, returned } = await syncOpenCodeSession({
+        registryPath: resolveRegistryPath(homeDir),
+        homeDir,
+        databasePath,
+        version,
+        sessionId: id,
+      });
+      const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
+      deps.stdout(
+        `${label} ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
       );
-      try {
-        const sourcePath = linkedDatabase ?? join(directory, "session.json");
-        if (!linkedDatabase)
-          await exportOpenCodeSession(id, sourcePath, cwd, {
-            ...process.env,
-            OPENCODE_DB: databasePath,
-          });
-        const tool = linked?.mirrors.opencode?.seedTool ?? "codex";
-        const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
-        const registryPath = resolveRegistryPath(homeDir);
-        const result = await syncSourceSessionToTargets({
-          sourceTool: "opencode",
-          sourcePath,
-          sourceSessionId: id,
-          openCodeDatabaseVersion: linkedDatabase ? version : undefined,
-          targetTools: [tool],
-          registryPath,
-          homeDir,
-        });
-        const write = result.writes[0]!;
-        const returned =
-          linked?.mirrors[tool] && write.appendedCount === 0
-            ? await returnLinkedTurnsToOpenCode({
-                registryPath,
-                tool,
-                sessionId: write.targetSessionId,
-                databasePath,
-                version,
-              })
-            : 0;
-        deps.stdout(
-          `${label} ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
-        );
-      } finally {
-        await fs.rm(directory, { force: true, recursive: true });
-      }
     };
     if (!all) {
       await sync(id!);

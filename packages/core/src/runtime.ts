@@ -1332,6 +1332,51 @@ export function syncSourceSessionToTargets(
   );
 }
 
+export function syncOpenCodeSession(params: {
+  registryPath: string;
+  homeDir: string;
+  databasePath: string;
+  version: string;
+  sessionId: string;
+}) {
+  return withRegistryWriteLock(params.registryPath, async () => {
+    const registry = await loadRegistry(params.registryPath, { readFile });
+    const linked = findConversationByNativeSession(
+      registry,
+      "opencode",
+      params.sessionId,
+    );
+    const mirror = linked?.mirrors.opencode;
+    if (
+      mirror?.openCodeDatabasePath &&
+      mirror.openCodeDatabasePath !== params.databasePath
+    )
+      throw new Error("OpenCode session is linked to a different database");
+    const tool = mirror?.seedTool ?? "codex";
+    const result = await syncSourceSessionUnderLock({
+      sourceTool: "opencode",
+      sourcePath: params.databasePath,
+      sourceSessionId: params.sessionId,
+      openCodeDatabaseVersion: params.version,
+      targetTools: [tool],
+      registryPath: params.registryPath,
+      homeDir: params.homeDir,
+    });
+    const write = result.writes[0]!;
+    const returned =
+      linked?.mirrors[tool] && write.appendedCount === 0
+        ? await returnLinkedTurnsUnderLock({
+            registryPath: params.registryPath,
+            tool,
+            sessionId: write.targetSessionId,
+            databasePath: params.databasePath,
+            version: params.version,
+          })
+        : 0;
+    return { tool, write, returned };
+  });
+}
+
 export async function createOpenCodeSeed(
   tool: Exclude<ToolName, "opencode">,
   path: string,

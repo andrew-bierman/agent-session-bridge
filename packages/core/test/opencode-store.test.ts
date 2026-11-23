@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
@@ -459,6 +460,29 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
             [cli, "sync-opencode", id, path],
             options,
           );
+        const lock = join(
+          root,
+          ".agent-session-bridge",
+          "registry.json.write-lock",
+        );
+        mkdirSync(lock);
+        try {
+          const denied = await promisify(execFile)(
+            process.execPath,
+            [cli, "sync-opencode", id, path],
+            options,
+          ).then(
+            () => {
+              throw new Error(
+                "Expected sync to stop while another writer holds the lock",
+              );
+            },
+            (error) => error.stderr as string,
+          );
+          expect(denied).toContain("Bridge registry write is locked");
+        } finally {
+          rmdirSync(lock);
+        }
         expect(syncCommand()).toMatch(/: [1-9]\d* records appended/);
         expect(syncCommand()).toMatch(/: 0 records appended/);
         appendFileSync(
