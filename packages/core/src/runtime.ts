@@ -1256,7 +1256,6 @@ export function syncSourceSessionToTargets(
   );
 }
 
-// shortcut: seed text-only sessions until tool and attachment conversion is verified in OpenCode.
 export async function createOpenCodeSeed(
   tool: Exclude<ToolName, "opencode">,
   path: string,
@@ -1285,27 +1284,41 @@ function buildOpenCodeSeed(
     reasoning: 0,
     cache: { read: 0, write: 0 },
   };
+  const pendingCalls = new Set<string>();
   const messages = snapshot.chunks.map(({ message, sourceOffset }) => {
-    if (
-      message.role === "tool" ||
-      !message.content.length ||
-      !message.content.every((item) => item.type === "text")
-    ) {
-      throw new Error(
-        "OpenCode seeding requires a text-only source conversation",
-      );
-    }
+    const content = message.content.map((block) => {
+      if (block.type === "text") return block;
+      if (block.type === "tool_call") {
+        if (pendingCalls.has(block.id))
+          throw new Error("Duplicate tool call in OpenCode seed");
+        pendingCalls.add(block.id);
+      } else if (block.type === "tool_result") {
+        if (!pendingCalls.delete(block.toolCallId))
+          throw new Error(
+            "Tool result without a matching call in OpenCode seed",
+          );
+      } else {
+        throw new Error(`Unsupported OpenCode seed content: ${block.type}`);
+      }
+      return {
+        type: "text" as const,
+        text:
+          "Historical tool record (already settled): " + JSON.stringify(block),
+      };
+    });
+    if (!content.length) throw new Error("Empty message in OpenCode seed");
     const messageId =
       "msg_" + deterministicUuid(`${seed}:${sourceOffset}`).replaceAll("-", "");
     const created = Date.parse(message.timestamp);
     if (!Number.isFinite(created))
       throw new Error("Invalid source message time");
-    return message.role === "user"
+    return message.role === "user" &&
+      !message.content.every((item) => item.type === "tool_result")
       ? {
           id: messageId,
           type: "user",
           time: { created },
-          text: message.content.map((item) => item.text).join("\n"),
+          text: content.map((item) => item.text).join("\n"),
         }
       : {
           id: messageId,
@@ -1316,9 +1329,11 @@ function buildOpenCodeSeed(
           tokens,
           cost: 0,
           finish: "stop",
-          content: message.content,
+          content,
         };
   });
+  if (pendingCalls.size)
+    throw new Error("Unsettled tool calls in OpenCode seed");
   const created = messages[0]!.time.created;
   return {
     info: {

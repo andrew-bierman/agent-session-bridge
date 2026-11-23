@@ -256,7 +256,7 @@ Bridge writer is running and inspect the registry and affected mirrors
 before clearing a stale lock. An interrupted import can leave partially
 written mirrors even though the registry was never updated.
 
-To create a native OpenCode session from a text-only Codex, Claude Code, or
+To create a native OpenCode session from a Codex, Claude Code, or
 Pi transcript, run this from the intended project directory against a
 disposable OpenCode 2.3.0 or 2.3.2 database:
 
@@ -268,6 +268,8 @@ Use `claude` or `pi` for those transcript formats. The command verifies the
 import by exporting the native session. An identical retry reuses the same
 ID. Changed source history is rejected if the mirror already exists. Seeding
 links the original Codex, Claude Code, or Pi transcript by its native ID.
+It preserves settled tool calls and results as historical text. Unsettled
+calls, attachments, and reasoning blocks detected in the source are rejected.
 Run `sync-opencode` with the ID printed by the seed command to exchange new
 text turns with that transcript. A changed seed prefix or independent turns
 on both sides stop sync.

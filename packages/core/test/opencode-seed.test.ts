@@ -70,11 +70,54 @@ it.each(fixtures)(
 );
 
 it.each(fixtures)(
-  "rejects %s tool history explicitly instead of importing a partial transcript",
+  "preserves settled %s tool calls and results as inert text",
   async (tool, name) => {
-    await expect(
-      createOpenCodeSeed(tool, fixturePath(name), "/repo/demo"),
-    ).rejects.toThrow("text-only source conversation");
+    const bundle = await createOpenCodeSeed(
+      tool,
+      fixturePath(name),
+      "/repo/demo",
+    );
+    const assistant = bundle.messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(
+      assistant
+        .flatMap((message) => message.content)
+        .every((block) => block.type === "text"),
+    ).toBe(true);
+    const history = assistant
+      .flatMap((message) => message.content)
+      .map((block) => block.text);
+    expect(history).toContain("Looking.");
+    expect(
+      history.some(
+        (text) =>
+          text.startsWith("Historical tool record") &&
+          text.includes('"type":"tool_call"') &&
+          text.includes("auth.ts"),
+      ),
+    ).toBe(true);
+    expect(
+      history.some(
+        (text) =>
+          text.startsWith("Historical tool record") &&
+          text.includes('"type":"tool_result"') &&
+          text.includes("file contents"),
+      ),
+    ).toBe(true);
+  },
+);
+
+it.each(fixtures)(
+  "rejects a %s seed with an unsettled tool call",
+  async (tool, name) => {
+    root = mkdtempSync(join(tmpdir(), "bridge-seed-unsettled-"));
+    const path = join(root, name);
+    const lines = readFileSync(fixturePath(name), "utf8").trim().split("\n");
+    writeFileSync(path, lines.slice(0, -1).join("\n") + "\n");
+    await expect(createOpenCodeSeed(tool, path, root)).rejects.toThrow(
+      "Unsettled tool calls",
+    );
   },
 );
 
@@ -138,6 +181,28 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
     const firstRecord = JSON.parse(original.split("\n")[0]!);
     const nativeId =
       firstRecord.payload?.id ?? firstRecord.sessionId ?? firstRecord.id;
+    const rich = join(root, "tool-history.jsonl");
+    writeFileSync(
+      rich,
+      readFileSync(fixturePath(name), "utf8")
+        .replaceAll("codex-session-1", "019cdef0-2584-7a14-8020-fedcba987654")
+        .replaceAll("claude-session-1", "rich-claude-session")
+        .replaceAll("pi-session-1", "rich-pi-session"),
+    );
+    const importedRich = run(bridge, "seed-opencode", tool, rich, database);
+    const richId = importedRich.match(
+      /OpenCode (ses_[a-zA-Z0-9]+): verified 3 seeded messages/,
+    )?.[1];
+    expect(richId).toBeDefined();
+    const richExport = JSON.parse(
+      run("opencode", "session", "export", "--standalone", richId!),
+    );
+    expect(
+      richExport.messages.map((message: { type: string }) => message.type),
+    ).toEqual(["user", "assistant", "assistant"]);
+    expect(richExport.messages.at(-1)?.content).toEqual([
+      { type: "text", text: expect.stringContaining("file contents") },
+    ]);
     const sync = () => run(bridge, "sync-opencode", id!, database);
     const version = run("opencode", "--version")
       .trim()
