@@ -755,6 +755,7 @@ export async function loadSourceSessionSnapshot(
       .map((line) => getClaudeLineTimestamp(line))
       .filter((value): value is string => Boolean(value));
 
+    const seenToolBlocks = new Set<string>();
     return {
       sourceTool,
       sourcePath,
@@ -763,9 +764,19 @@ export async function loadSourceSessionSnapshot(
       updatedAt: timestamps.at(-1) ?? info.mtime.toISOString(),
       chunks: lines.flatMap((line, index) => {
         const normalized = convertClaudeLineToNormalized(line);
-        return normalized
-          ? [{ sourceOffset: index + 1, message: normalized }]
-          : [];
+        if (!normalized) return [];
+        const content = normalized.content.filter((block) => {
+          if (block.type !== "tool_call" && block.type !== "tool_result")
+            return true;
+          const key = JSON.stringify(block);
+          if (seenToolBlocks.has(key)) return false;
+          seenToolBlocks.add(key);
+          return true;
+        });
+        if (!content.length && normalized.content.length) return [];
+        return [
+          { sourceOffset: index + 1, message: { ...normalized, content } },
+        ];
       }),
     };
   }

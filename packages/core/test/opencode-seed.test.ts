@@ -121,6 +121,34 @@ it.each(fixtures)(
   },
 );
 
+it("previews Claude tool records repeated in the same transcript once", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-claude-replayed-tools-"));
+  const path = join(root, "claude.jsonl");
+  const source = readFileSync(
+    fixturePath("claude-session.jsonl"),
+    "utf8",
+  ).trim();
+  const [, call, result] = source.split("\n");
+  const repeatedCall = JSON.parse(call!);
+  repeatedCall.uuid = "later-call-record";
+  repeatedCall.message.content = repeatedCall.message.content.filter(
+    (block: { type: string }) => block.type === "tool_use",
+  );
+  writeFileSync(
+    path,
+    [source, JSON.stringify(repeatedCall), result, ""].join("\n"),
+  );
+  const bundle = await createOpenCodeSeed("claude", path, root);
+  expect(bundle.messages).toHaveLength(3);
+  expect(JSON.stringify(bundle)).toContain("file contents");
+  const changedResult = JSON.parse(result!);
+  changedResult.message.content[0].content = "Conflicting replacement";
+  writeFileSync(path, source + "\n" + JSON.stringify(changedResult) + "\n");
+  await expect(createOpenCodeSeed("claude", path, root)).rejects.toThrow(
+    "without a matching call",
+  );
+});
+
 it("retains Pi text and marks reasoning and empty records without copying private reasoning", async () => {
   root = mkdtempSync(join(tmpdir(), "bridge-seed-reasoning-"));
   const path = textTranscript("pi", "pi-session.jsonl");
