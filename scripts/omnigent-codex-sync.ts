@@ -1,20 +1,20 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Copy Codex rollouts created by Omnigent's private per-session CODEX_HOMEs into
 // the native Codex home and index them so they show up in `codex resume`.
 //
 // Usage:
-//   node scripts/omnigent-codex-sync.mjs --omnigent-data <dir> [--codex-home ~/.codex] [--apply]
+//   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply]
 //
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
-// Requires `pnpm build` (uses packages/core/dist) and the sqlite3 CLI.
+// Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
 import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { backfillCodexThreadIndex } from "../packages/core/src/runtime.js";
 
 const args = process.argv.slice(2);
-const flag = (name) => args.includes(name);
-const opt = (name, fallback) => {
+const flag = (name: string) => args.includes(name);
+const opt = (name: string, fallback: string) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
@@ -25,12 +25,7 @@ const omnigentData = resolve(
 const codexHome = resolve(opt("--codex-home", join(homedir(), ".codex")));
 const apply = flag("--apply");
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-const { backfillCodexThreadIndex } = await import(
-  pathToFileURL(join(here, "..", "packages", "core", "dist", "runtime.js")).href
-);
-
-async function* walk(dir) {
+async function* walk(dir: string): AsyncGenerator<string> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -44,7 +39,7 @@ async function* walk(dir) {
   }
 }
 
-async function exists(p) {
+async function exists(p: string): Promise<boolean> {
   try {
     await stat(p);
     return true;
@@ -53,7 +48,9 @@ async function exists(p) {
   }
 }
 
-async function sessionMeta(rolloutPath) {
+type SessionMeta = { id: string; cwd: string; timestamp?: string };
+
+async function sessionMeta(rolloutPath: string): Promise<SessionMeta | null> {
   const text = await readFile(rolloutPath, "utf8");
   for (const line of text.split("\n").slice(0, 50)) {
     if (!line.trim()) continue;
@@ -69,9 +66,9 @@ async function sessionMeta(rolloutPath) {
   return null;
 }
 
-const found = [];
+const found: string[] = [];
 for await (const p of walk(omnigentData)) {
-  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes(`${"codex-home"}`)) found.push(p);
+  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes("codex-home")) found.push(p);
 }
 
 if (apply) {
