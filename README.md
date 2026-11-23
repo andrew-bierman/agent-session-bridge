@@ -248,3 +248,10 @@ agent-session-bridge sync-opencode OPENCODE_SESSION_ID /path/to/opencode.db
 The command creates or updates the Codex mirror when OpenCode is ahead, or
 returns pending Codex text turns when OpenCode is unchanged. If both sides
 have new turns, it refuses the sync and leaves both histories intact.
+
+Bridge rejects overlapping imports and OpenCode returns against the same
+registry. If a process is killed, it can leave an empty
+`registry.json.write-lock` directory beside the registry. Check that no
+Bridge writer is running and inspect the registry and affected mirrors
+before clearing a stale lock. An interrupted import can leave partially
+written mirrors even though the registry was never updated.

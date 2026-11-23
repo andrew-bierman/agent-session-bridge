@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   rename,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -1196,8 +1197,47 @@ function codexImportOffset(conversation: BridgeConversation): number {
   );
 }
 
+async function withRegistryWriteLock<T>(
+  registryPath: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const lockPath = `${registryPath}.write-lock`;
+  await mkdir(dirname(registryPath), { recursive: true });
+  try {
+    await mkdir(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(
+        "Bridge registry write is locked; retry when the other operation finishes",
+      );
+    }
+    throw error;
+  }
+  try {
+    return await run();
+  } finally {
+    await rmdir(lockPath);
+  }
+}
+
+export function returnCodexTurnsToOpenCode(
+  params: Parameters<typeof returnCodexTurnsUnderLock>[0],
+): Promise<number> {
+  return withRegistryWriteLock(params.registryPath, () =>
+    returnCodexTurnsUnderLock(params),
+  );
+}
+
+export function syncSourceSessionToTargets(
+  params: Parameters<typeof syncSourceSessionUnderLock>[0],
+): Promise<SyncSourceSessionResult> {
+  return withRegistryWriteLock(params.registryPath, () =>
+    syncSourceSessionUnderLock(params),
+  );
+}
+
 // shortcut: explicit linked Codex text sessions only, extend after richer turns are verified.
-export async function returnCodexTurnsToOpenCode(params: {
+async function returnCodexTurnsUnderLock(params: {
   registryPath: string;
   codexSessionId: string;
   databasePath: string;
@@ -1318,7 +1358,7 @@ export async function returnCodexTurnsToOpenCode(params: {
   );
 }
 
-export async function syncSourceSessionToTargets(params: {
+async function syncSourceSessionUnderLock(params: {
   sourceTool: ToolName;
   sourcePath: string;
   sourceSessionId?: string;

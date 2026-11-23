@@ -77,7 +77,14 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
       });
     writeFileSync(sourcePath, JSON.stringify(bundle));
     await expect(sync()).rejects.toThrow("Source project directory is missing");
-    const result = await sync(root);
+    const attempts = await Promise.allSettled([sync(root), sync(root)]);
+    const failed = attempts.find((attempt) => attempt.status === "rejected");
+    const succeeded = attempts.find(
+      (attempt) => attempt.status === "fulfilled",
+    );
+    expect(failed?.reason.message).toContain("registry write is locked");
+    expect(succeeded).toBeDefined();
+    const result = succeeded!.value;
     const rollout = readFileSync(result.writes[0]!.sessionPath, "utf8");
     expect(JSON.parse(rollout.split("\n")[0]!).payload.cwd).toBe(root);
     expect(rollout).toContain("example.txt");
