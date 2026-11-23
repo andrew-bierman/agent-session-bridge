@@ -1709,7 +1709,16 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       return importedCount > 0 ? 0 : 1;
     }
 
-    const candidates = await listForeignSessionCandidates(cwd, homeDir);
+    const candidates = (
+      await listForeignSessionCandidates(cwd, homeDir)
+    ).filter(
+      (candidate) =>
+        findConversationByNativeSession(
+          registry,
+          candidate.sourceTool,
+          candidate.id,
+        )?.mirrors[candidate.sourceTool]?.seededSourceOffset == null,
+    );
     if (dryRun) {
       const routes = candidates.reduce(
         (count, candidate) =>

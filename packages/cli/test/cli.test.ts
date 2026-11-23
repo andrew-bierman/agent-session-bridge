@@ -936,6 +936,35 @@ CREATE TABLE threads (
 
     expect(exitCode).toBe(0);
     expect(lines[0]).toContain("imported");
+    const saved = await loadRegistry(registryPath, { readFile });
+    const mirror = saved.conversations[0]!.mirrors.claude!;
+    const original = await readFile(piSessionPath, "utf8");
+    const imported = await readFile(mirror.sessionPath, "utf8");
+    await writeFile(
+      mirror.sessionPath,
+      imported +
+        JSON.stringify({
+          type: "user",
+          sessionId: mirror.nativeId,
+          cwd: projectDir,
+          timestamp: new Date().toISOString(),
+          uuid: "native-claude-turn",
+          message: { role: "user", content: "Only in the Claude mirror" },
+        }) +
+        "\n",
+    );
+    lines.length = 0;
+    expect(
+      await runCli(["import", "--all", "--tool", "pi", "--cwd", projectDir], {
+        cwd: repoRoot,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {},
+        stdout: (line) => lines.push(line),
+      }),
+    ).toBe(0);
+    expect(lines[0]).toContain("imported 0 entries");
+    expect(await readFile(piSessionPath, "utf8")).toBe(original);
   });
 
   it("skips malformed source session files during bulk import", async () => {
