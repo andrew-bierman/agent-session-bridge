@@ -438,6 +438,80 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(
           JSON.parse(opencode("session", "export", "--standalone", id)),
         ).toEqual(beforeExport);
+        const source = join(root, "fresh-codex.jsonl");
+        writeFileSync(
+          source,
+          [
+            {
+              type: "session_meta",
+              payload: { id: "fresh-codex", cwd: project },
+            },
+            {
+              timestamp: new Date(now).toISOString(),
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: [
+                  { type: "input_text", text: "Fresh imported context" },
+                ],
+              },
+            },
+            {
+              timestamp: new Date(now + 1).toISOString(),
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "assistant",
+                content: [
+                  { type: "output_text", text: "Fresh imported answer" },
+                ],
+              },
+            },
+          ]
+            .map((record) => JSON.stringify(record))
+            .join("\n") + "\n",
+        );
+        const seed = () =>
+          execFileSync(
+            process.execPath,
+            [cli, "seed-opencode", "codex", source, path],
+            options,
+          );
+        const seededId = seed().match(
+          /OpenCode (ses_[a-zA-Z0-9]+): verified 2 seeded messages/,
+        )?.[1];
+        if (!seededId) throw new Error("Missing imported OpenCode session ID");
+        const inspectSeed = () =>
+          JSON.parse(opencode("session", "export", "--standalone", seededId));
+        const seeded = inspectSeed();
+        modelRequest = "";
+        await promisify(execFile)(
+          "opencode",
+          [
+            "run",
+            "--standalone",
+            "--session",
+            seededId,
+            "--model",
+            "fixture/test",
+            "--format",
+            "json",
+            "Continue the seeded thread",
+          ],
+          options,
+        );
+        expect(modelRequest).toContain("Fresh imported context");
+        expect(modelRequest).toContain("Fresh imported answer");
+        expect(modelRequest).toContain("Continue the seeded thread");
+        const continued = inspectSeed();
+        expect(continued.info.id).toBe(seededId);
+        expect(continued.messages.slice(0, 2)).toEqual(seeded.messages);
+        expect(JSON.stringify(continued.messages.slice(2))).toContain(
+          "Offline continuation",
+        );
+        expect(seed()).toContain(seededId);
+        expect(inspectSeed()).toEqual(continued);
       } finally {
         provider.closeAllConnections();
         await new Promise<void>((resolve) => provider.close(() => resolve()));
