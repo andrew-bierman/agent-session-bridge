@@ -1237,6 +1237,81 @@ export function syncSourceSessionToTargets(
 }
 
 // shortcut: explicit linked Codex text sessions only, extend after richer turns are verified.
+// shortcut: seed text-only sessions until tool and attachment conversion is verified in OpenCode.
+export async function createOpenCodeSeed(
+  tool: Exclude<ToolName, "opencode">,
+  path: string,
+  cwd: string,
+) {
+  const snapshot = await loadSourceSessionSnapshot(tool, path);
+  if (!snapshot.chunks.length)
+    throw new Error("Source session has no supported messages");
+  const seed = `${tool}:${snapshot.sourceSessionId}`;
+  const id = "ses_" + deterministicUuid(seed).replaceAll("-", "");
+  const model = { providerID: "openai", id: "codex-import" };
+  const tokens = {
+    input: 0,
+    output: 0,
+    reasoning: 0,
+    cache: { read: 0, write: 0 },
+  };
+  const messages = snapshot.chunks.map(({ message, sourceOffset }) => {
+    if (
+      message.role === "tool" ||
+      !message.content.length ||
+      !message.content.every((item) => item.type === "text")
+    ) {
+      throw new Error(
+        "OpenCode seeding requires a text-only source conversation",
+      );
+    }
+    const messageId =
+      "msg_" + deterministicUuid(`${seed}:${sourceOffset}`).replaceAll("-", "");
+    const created = Date.parse(message.timestamp);
+    if (!Number.isFinite(created))
+      throw new Error("Invalid source message time");
+    return message.role === "user"
+      ? {
+          id: messageId,
+          type: "user",
+          time: { created },
+          text: message.content.map((item) => item.text).join("\n"),
+        }
+      : {
+          id: messageId,
+          type: "assistant",
+          time: { created, completed: created },
+          agent: "build",
+          model,
+          tokens,
+          cost: 0,
+          finish: "stop",
+          content: message.content,
+        };
+  });
+  const created = messages[0]!.time.created;
+  return {
+    info: {
+      id,
+      projectID: "global",
+      title: "Imported " + tool + " conversation",
+      agent: "build",
+      model,
+      tokens,
+      cost: 0,
+      location: { directory: cwd },
+      time: {
+        created,
+        updated: messages.reduce(
+          (latest, message) => Math.max(latest, message.time.created),
+          created,
+        ),
+      },
+    },
+    messages,
+  };
+}
+
 async function returnCodexTurnsUnderLock(params: {
   registryPath: string;
   codexSessionId: string;

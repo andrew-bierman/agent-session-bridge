@@ -255,3 +255,16 @@ registry. If a process is killed, it can leave an empty
 Bridge writer is running and inspect the registry and affected mirrors
 before clearing a stale lock. An interrupted import can leave partially
 written mirrors even though the registry was never updated.
+
+To create a native OpenCode session from a text-only Codex, Claude Code, or
+Pi transcript, run this from the intended project directory against a
+disposable OpenCode 2.3.0 or 2.3.2 database:
+
+```sh
+agent-session-bridge seed-opencode codex /path/to/rollout.jsonl /path/to/opencode.db
+```
+
+Use `claude` or `pi` for those transcript formats. The command verifies the
+import by exporting the native session. An identical retry reuses the same
+ID. Changed source history is rejected if the mirror already exists. Seeding
+is a one-time import. Ongoing sync needs a separately established link.
