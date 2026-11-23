@@ -84,11 +84,13 @@ describe("session parsers", () => {
     );
     const record = '{"type":"event_msg"}\n';
     await writeFile(path, zstdCompressSync(record.repeat(100_000)));
-    const iterator = iterateCodexRollout(path);
-    expect((await iterator.next()).value).toEqual({ type: "event_msg" });
-    await expect(iterator.return(undefined)).resolves.toMatchObject({
-      done: true,
-    });
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const iterator = iterateCodexRollout(path);
+      expect((await iterator.next()).value).toEqual({ type: "event_msg" });
+      await expect(iterator.return(undefined)).resolves.toMatchObject({
+        done: true,
+      });
+    }
     await writeFile(
       path,
       zstdCompressSync(record + "invalid JSON\n" + record.repeat(100_000)),

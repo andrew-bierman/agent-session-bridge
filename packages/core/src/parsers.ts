@@ -53,11 +53,14 @@ export async function* iterateCodexRollout(
 ): AsyncGenerator<CodexRolloutItem> {
   const file = createReadStream(path);
   const input = path.endsWith(".zst")
-    ? file.compose(createZstdDecompress())
+    ? file.pipe(createZstdDecompress())
     : file;
+  if (input !== file) file.on("error", (error) => input.destroy(error));
   let tail = "";
   try {
-    for await (const chunk of input.setEncoding("utf8")) {
+    for await (const chunk of input
+      .setEncoding("utf8")
+      .iterator({ destroyOnReturn: false })) {
       const lines = (tail + chunk).split("\n");
       tail = lines.pop()!;
       for (const line of lines) {

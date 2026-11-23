@@ -91,9 +91,11 @@ describe("CLI", () => {
         .join("\n")
         .replace("pi-session-1", "unsettled-session") + "\n";
     await writeFile(unsupported, invalid);
+    const manifest = join(projectDir, "source paths.json");
+    await writeFile(manifest, JSON.stringify([eligible, unsupported]));
     const lines: string[] = [];
     const exitCode = await runCli(
-      ["seed-opencode", "pi", eligible, unsupported, "--dry-run"],
+      ["seed-opencode", "pi", "--from-list", manifest, "--dry-run"],
       {
         cwd: projectDir,
         homeDir,

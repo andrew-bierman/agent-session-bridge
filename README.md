@@ -310,6 +310,11 @@ recorded in each transcript:
 agent-session-bridge seed-opencode codex /path/to/rollout-*.jsonl --database /path/to/copy.db
 ```
 
+For an archive that exceeds the shell argument limit, use
+`--from-list /path/to/transcripts.json` in place of positional transcript
+paths. The file must be a JSON array of paths. Relative paths are resolved
+from the working directory. Both preview and batch import accept this flag.
+
 Each candidate is verified independently. Use `--target-cwd DIRECTORY` to
 provide a fallback for transcripts whose original project no longer exists.
 A batch rejects distinct files claiming the same native session ID before

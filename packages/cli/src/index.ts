@@ -76,7 +76,8 @@ function withoutFlags(args: string[]): string[] {
         value === "--cwd" ||
         value === "--tool" ||
         value === "--target-cwd" ||
-        value === "--database"
+        value === "--database" ||
+        value === "--from-list"
       ) {
         index += 1;
       }
@@ -1540,11 +1541,13 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   if (command === "seed-opencode") {
-    const [tool, ...paths] = rest;
+    const [tool, ...positionalPaths] = rest;
     const allowIncompleteTools = hasFlag(
       restWithFlags,
       "--allow-incomplete-tools",
     );
+    const manifest = readOption(restWithFlags, "--from-list");
+    const fromList = hasFlag(restWithFlags, "--from-list");
     const batch = hasFlag(restWithFlags, "--database");
     const fallback = readOption(restWithFlags, "--target-cwd");
     const fallbackFlag = hasFlag(restWithFlags, "--target-cwd");
@@ -1553,17 +1556,36 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       (tool !== "codex" && tool !== "claude" && tool !== "pi") ||
       (batch && (dryRun || !batchDatabase || batchDatabase.startsWith("--"))) ||
       (fallbackFlag && (!batch || !fallback || fallback.startsWith("--"))) ||
-      paths.length === 0 ||
-      (!dryRun && !batch && paths.length !== 2) ||
+      (fromList
+        ? !manifest ||
+          manifest.startsWith("--") ||
+          positionalPaths.length > 0 ||
+          (!batch && !dryRun)
+        : positionalPaths.length === 0) ||
+      (!dryRun && !batch && positionalPaths.length !== 2) ||
       restWithFlags.length !==
         rest.length +
           (dryRun ? 1 : batch ? 2 : 0) +
           (fallbackFlag ? 2 : 0) +
-          (allowIncompleteTools ? 1 : 0)
+          (allowIncompleteTools ? 1 : 0) +
+          (fromList ? 2 : 0)
     ) {
       throw new Error(
-        "Usage: seed-opencode <codex|claude|pi> <transcript> <database>, seed-opencode <codex|claude|pi> <transcript>... --database <database> [--target-cwd <fallback directory>], or seed-opencode <codex|claude|pi> <transcript>... --dry-run",
+        "Usage: seed-opencode <codex|claude|pi> <transcript> <database>, seed-opencode <codex|claude|pi> <transcript>... --database <database> [--target-cwd <fallback directory>], or seed-opencode <codex|claude|pi> <transcript>... --dry-run. Batch and preview may use --from-list <JSON file> in place of transcript paths.",
       );
+    }
+    let paths = positionalPaths;
+    if (manifest) {
+      const entries: unknown = JSON.parse(
+        await fs.readFile(resolve(cwd, manifest), "utf8"),
+      );
+      if (
+        !Array.isArray(entries) ||
+        !entries.length ||
+        entries.some((entry) => typeof entry !== "string" || !entry.length)
+      )
+        throw new Error("Expected a nonempty JSON array of transcript paths");
+      paths = entries;
     }
     const project = await fs.realpath(cwd);
     const sourceIds = new Map<string, string>();
