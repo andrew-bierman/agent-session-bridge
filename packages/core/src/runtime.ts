@@ -707,6 +707,8 @@ export async function loadSourceSessionSnapshot(
     ) {
       throw new Error("Expected an OpenCode v2 session export");
     }
+    if (explicitSessionId && id !== explicitSessionId)
+      throw new Error("OpenCode export session identity changed");
     const chunks = normalizeOpenCodeMessages(messages);
     return {
       sourceTool,

@@ -84,6 +84,25 @@ function withoutFlags(args: string[]): string[] {
   return result;
 }
 
+async function exportOpenCodeSession(
+  id: string,
+  path: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const output = await fs.open(path, "wx", 0o600);
+  try {
+    execFileSync("opencode", ["session", "export", "--standalone", id], {
+      cwd,
+      env,
+      timeout: 30000,
+      stdio: ["ignore", output.fd, "pipe"],
+    });
+  } finally {
+    await output.close();
+  }
+}
+
 function resolveHomeDir(deps: CliDeps): string {
   return deps.homeDir ?? homedir();
 }
@@ -1600,12 +1619,14 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
           ["session", "import", "--standalone", path],
           bundle.info.location.directory,
         );
-        const actual = JSON.parse(
-          opencode(
-            ["session", "export", "--standalone", bundle.info.id],
-            bundle.info.location.directory,
-          ),
+        const exportPath = join(directory, "verified.json");
+        await exportOpenCodeSession(
+          bundle.info.id,
+          exportPath,
+          bundle.info.location.directory,
+          env,
         );
+        const actual = JSON.parse(await fs.readFile(exportPath, "utf8"));
         if (
           actual.info?.id !== bundle.info.id ||
           actual.info?.location?.directory !== bundle.info.location.directory ||
@@ -1696,27 +1717,17 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       );
       try {
         const sourcePath = join(directory, "session.json");
-        const exported = execFileSync(
-          "opencode",
-          ["session", "export", "--standalone", id],
-          {
-            cwd,
-            env: { ...process.env, OPENCODE_DB: databasePath },
-            encoding: "utf8",
-            timeout: 30000,
-            maxBuffer: 32 * 1024 * 1024,
-          },
-        );
-        await fs.writeFile(sourcePath, exported, { mode: 0o600 });
-        const source = await loadSourceSessionSnapshot("opencode", sourcePath);
-        if (source.sourceSessionId !== id)
-          throw new Error("OpenCode export session identity changed");
+        await exportOpenCodeSession(id, sourcePath, cwd, {
+          ...process.env,
+          OPENCODE_DB: databasePath,
+        });
         const tool = linked?.mirrors.opencode?.seedTool ?? "codex";
         const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
         const registryPath = resolveRegistryPath(homeDir);
         const result = await syncSourceSessionToTargets({
           sourceTool: "opencode",
           sourcePath,
+          sourceSessionId: id,
           targetTools: [tool],
           registryPath,
           homeDir,
