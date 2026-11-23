@@ -644,25 +644,62 @@ function normalizeOpenCodeMessages(
       entry?.type === "system"
     )
       return [];
-    const historical =
-      entry?.type === "synthetic" && typeof entry.text === "string"
-        ? "Historical OpenCode synthetic record: " + JSON.stringify(entry.text)
-        : entry?.type === "compaction" &&
-            entry.status === "completed" &&
-            typeof entry.summary === "string"
-          ? "Historical OpenCode compaction summary: " +
-            JSON.stringify(entry.summary)
-          : undefined;
+    let historical: string | undefined;
+    if (entry?.type === "synthetic" && typeof entry.text === "string") {
+      historical =
+        "Historical OpenCode synthetic record: " + JSON.stringify(entry.text);
+    } else if (
+      entry?.type === "compaction" &&
+      entry.status === "completed" &&
+      typeof entry.summary === "string"
+    ) {
+      historical =
+        "Historical OpenCode compaction summary: " +
+        JSON.stringify(entry.summary);
+    } else if (
+      entry?.type === "shell" &&
+      (entry.status === "exited" || entry.status === "killed") &&
+      typeof entry.command === "string"
+    ) {
+      historical =
+        "Historical OpenCode shell record: " +
+        JSON.stringify({
+          command: entry.command,
+          status: entry.status,
+          exit: entry.exit,
+          output: entry.output,
+        });
+    } else if (entry?.type === "location-switched" && entry.location) {
+      historical =
+        "Historical OpenCode project location change: " +
+        JSON.stringify(entry.location);
+    }
     const blocks =
       historical !== undefined
         ? [{ type: "text", text: historical }]
-        : entry?.type === "user" && !entry.files?.length
-          ? [{ type: "text", text: entry.text }]
+        : entry?.type === "user" && typeof entry.text === "string"
+          ? [
+              {
+                type: "text",
+                text: entry.files?.length
+                  ? entry.text +
+                    "\n[Source attachments omitted; see the original session]"
+                  : entry.text,
+              },
+            ]
           : entry?.type === "assistant"
-            ? entry.content
+            ? entry.error && Array.isArray(entry.content)
+              ? [
+                  ...entry.content,
+                  {
+                    type: "text",
+                    text: "[Source OpenCode assistant turn failed]",
+                  },
+                ]
+              : entry.content
             : null;
     if (
-      entry?.error ||
+      (entry?.error && entry.type !== "assistant") ||
       typeof entry?.id !== "string" ||
       !Number.isFinite(entry?.time?.created) ||
       !Array.isArray(blocks)

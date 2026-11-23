@@ -54,7 +54,33 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
           id: "msg_user",
           type: "user",
           text: "Read the example",
+          files: [{ url: "private-file-payload" }],
           time: { created: now },
+        },
+        {
+          id: "msg_shell",
+          type: "shell",
+          time: { created: now },
+          command: "pwd",
+          status: "exited",
+          exit: 0,
+          output: { text: "historical shell output" },
+        },
+        {
+          id: "msg_location",
+          type: "location-switched",
+          time: { created: now },
+          location: { directory: "/previous-project" },
+        },
+        {
+          id: "msg_failed_assistant",
+          type: "assistant",
+          time: { created: now },
+          error: {
+            name: "provider error",
+            detail: "private provider error detail",
+          },
+          content: [{ type: "text", text: "Partial assistant answer" }],
         },
         { id: "msg_model", type: "model-switched", time: { created: now } },
         {
@@ -89,6 +115,16 @@ it("keeps settled tool inputs and results as historical text in the Codex mirror
     const result = succeeded!.value;
     const rollout = readFileSync(result.writes[0]!.sessionPath, "utf8");
     expect(JSON.parse(rollout.split("\n")[0]!).payload.cwd).toBe(root);
+    expect(rollout).toContain("Read the example");
+    expect(rollout).toContain(
+      "[Source attachments omitted; see the original session]",
+    );
+    expect(rollout).not.toContain("private-file-payload");
+    expect(rollout).toContain("Partial assistant answer");
+    expect(rollout).toContain("[Source OpenCode assistant turn failed]");
+    expect(rollout).not.toContain("private provider error detail");
+    expect(rollout).toContain("historical shell output");
+    expect(rollout).toContain("/previous-project");
     expect(rollout).toContain("example.txt");
     expect(rollout).toContain("historical tool result");
     expect(rollout).not.toContain("provider reasoning marker");
