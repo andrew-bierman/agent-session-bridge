@@ -1343,6 +1343,9 @@ function buildOpenCodeSeed(
   snapshot: SourceSessionSnapshot,
   cwd: string,
 ) {
+  if (tool === "codex" && !isCodexThreadId(snapshot.sourceSessionId)) {
+    throw new Error("OpenCode sync requires a native Codex thread ID");
+  }
   if (!snapshot.chunks.length)
     throw new Error("Source session has no supported messages");
   const seed = `${tool}:${snapshot.sourceSessionId}`;
@@ -1388,9 +1391,6 @@ export async function seedLinkedSessionInOpenCode(params: {
   await withRegistryWriteLock(params.registryPath, async () => {
     const { tool } = params;
     const source = await loadSourceSessionSnapshot(tool, params.sourcePath);
-    if (tool === "codex" && !isCodexThreadId(source.sourceSessionId)) {
-      throw new Error("OpenCode sync requires a native Codex thread ID");
-    }
     const bundle = buildOpenCodeSeed(tool, source, params.cwd);
     const registry = await loadRegistry(params.registryPath, { readFile });
     const linked = findConversationByNativeSession(

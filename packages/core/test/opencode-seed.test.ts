@@ -185,7 +185,10 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
     writeFileSync(
       rich,
       readFileSync(fixturePath(name), "utf8")
-        .replaceAll("codex-session-1", "019cdef0-2584-7a14-8020-fedcba987654")
+        .replaceAll(
+          "019cdef0-2584-7a14-8020-123456789abc",
+          "019cdef0-2584-7a14-8020-fedcba987654",
+        )
         .replaceAll("claude-session-1", "rich-claude-session")
         .replaceAll("pi-session-1", "rich-pi-session"),
     );

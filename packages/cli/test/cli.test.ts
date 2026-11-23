@@ -80,6 +80,35 @@ async function writeAdjustedFixture(
 }
 
 describe("CLI", () => {
+  it("previews all OpenCode seed candidates and reports unsupported sessions without writing", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const eligible = join(fixturesDir, "pi-session.jsonl");
+    const unsupported = join(projectDir, "unsettled.jsonl");
+    const records = (await readFile(eligible, "utf8")).trim().split("\n");
+    await writeFile(unsupported, records.slice(0, -1).join("\n") + "\n");
+    const lines: string[] = [];
+    const exitCode = await runCli(
+      ["seed-opencode", "pi", eligible, unsupported, "--dry-run"],
+      {
+        cwd: projectDir,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {
+          throw new Error("preview attempted to save");
+        },
+        stdout: (line) => lines.push(line),
+      },
+    );
+    expect(exitCode).toBe(1);
+    expect(lines[0]).toMatch(/ses_[a-z0-9]+, 3 messages eligible for import/);
+    expect(lines[1]).toContain("Unsettled tool calls");
+    expect(lines[2]).toBe("dry-run: 1 validated, 1 rejected; no writes");
+    expect(await exists(join(homeDir, ".agent-session-bridge"))).toBe(false);
+    expect(await readFile(unsupported, "utf8")).toBe(
+      records.slice(0, -1).join("\n") + "\n",
+    );
+  });
+
   it("lists conversations", async () => {
     const lines: string[] = [];
 

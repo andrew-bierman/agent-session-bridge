@@ -1512,21 +1512,43 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   if (command === "seed-opencode") {
-    const [tool, transcript, database] = rest;
+    const [tool, ...paths] = rest;
     if (
       (tool !== "codex" && tool !== "claude" && tool !== "pi") ||
-      !transcript ||
-      !database ||
-      rest.length !== 3 ||
-      restWithFlags.length !== 3
+      (dryRun
+        ? paths.length === 0 || restWithFlags.length !== rest.length + 1
+        : paths.length !== 2 || restWithFlags.length !== rest.length)
     ) {
       throw new Error(
-        "Usage: seed-opencode <codex|claude|pi> <transcript> <OpenCode database path>",
+        "Usage: seed-opencode <codex|claude|pi> <transcript> <OpenCode database path>, or seed-opencode <codex|claude|pi> <transcript>... --dry-run",
       );
     }
+    const project = await fs.realpath(cwd);
+    if (dryRun) {
+      let rejected = 0;
+      for (const path of paths) {
+        try {
+          const bundle = await createOpenCodeSeed(
+            tool,
+            resolve(cwd, path),
+            project,
+          );
+          deps.stdout(
+            `${path}: ${bundle.info.id}, ${bundle.messages.length} messages eligible for import`,
+          );
+        } catch (error) {
+          rejected += 1;
+          deps.stdout(`${path}: rejected (${(error as Error).message})`);
+        }
+      }
+      deps.stdout(
+        `dry-run: ${paths.length - rejected} validated, ${rejected} rejected; no writes`,
+      );
+      return rejected ? 1 : 0;
+    }
+    const [transcript, database] = paths as [string, string];
     const databasePath = await fs.realpath(resolve(cwd, database));
     const sourcePath = await fs.realpath(resolve(cwd, transcript));
-    const project = await fs.realpath(cwd);
     const env = { ...process.env, OPENCODE_DB: databasePath };
     const opencode = (args: string[]) =>
       execFileSync("opencode", args, {

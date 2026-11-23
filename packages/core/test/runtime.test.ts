@@ -259,7 +259,9 @@ describe("runtime sync flows", () => {
       "claude",
     );
 
-    expect(candidates.map((candidate) => candidate.path)).toContain(validPiPath);
+    expect(candidates.map((candidate) => candidate.path)).toContain(
+      validPiPath,
+    );
     expect(candidates.map((candidate) => candidate.path)).not.toContain(
       malformedPiPath,
     );
@@ -312,7 +314,11 @@ describe("runtime sync flows", () => {
         },
       },
     };
-    await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(registry, null, 2)}\n`,
+      "utf8",
+    );
 
     const repairedRun = await syncSourceSessionToTargets({
       sourceTool: "pi",
@@ -357,7 +363,9 @@ describe("runtime sync flows", () => {
 
     const codexMirrorPath = firstRun.conversation.mirrors.codex?.sessionPath;
     expect(codexMirrorPath).toBeTruthy();
-    expect(firstRun.conversation.mirrors.codex?.seededSourceOffset).toBeTruthy();
+    expect(
+      firstRun.conversation.mirrors.codex?.seededSourceOffset,
+    ).toBeTruthy();
 
     const codexReplay = await syncSourceSessionToTargets({
       sourceTool: "codex",
@@ -390,7 +398,7 @@ describe("runtime sync flows", () => {
     await writeFile(
       secondCodexPath,
       firstContent
-        .replaceAll("codex-session-1", "codex-session-2")
+        .replaceAll("019cdef0-2584-7a14-8020-123456789abc", "codex-session-2")
         .replaceAll("codex-user-1", "codex-user-2")
         .replaceAll("codex-assistant-1", "codex-assistant-2")
         .replaceAll("2026-04-05T10:00:01.000Z", "2026-04-05T11:00:01.000Z")
@@ -429,7 +437,9 @@ describe("runtime sync flows", () => {
     const registry = await loadRegistry(registryPath, { readFile });
     expect(registry.conversations).toHaveLength(2);
 
-    const firstPi = await readPiSession(firstRun.conversation.mirrors.pi!.sessionPath);
+    const firstPi = await readPiSession(
+      firstRun.conversation.mirrors.pi!.sessionPath,
+    );
     const secondPi = await readPiSession(
       secondRun.conversation.mirrors.pi!.sessionPath,
     );
@@ -522,9 +532,9 @@ CREATE TABLE threads (
       `delete from threads where id='${codexMirror.nativeId}';`,
     ]);
 
-    expect(
-      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
-    ).toBe(false);
+    expect(await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId)).toBe(
+      false,
+    );
 
     const backfilled = await backfillCodexThreadIndex({
       homeDir,
@@ -534,9 +544,9 @@ CREATE TABLE threads (
     });
 
     expect(backfilled.indexed).toBe(true);
-    expect(
-      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
-    ).toBe(true);
+    expect(await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId)).toBe(
+      true,
+    );
 
     const indexedRow = execFileSync("sqlite3", [
       stateDbPath,

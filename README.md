@@ -264,6 +264,16 @@ disposable OpenCode 2.3.0 or 2.3.2 database:
 agent-session-bridge seed-opencode codex /path/to/rollout.jsonl /path/to/opencode.db
 ```
 
+Preview a batch of transcripts without opening an OpenCode database or
+writing to the registry:
+
+```sh
+agent-session-bridge seed-opencode codex /path/to/rollout-*.jsonl --dry-run
+```
+
+The preview lists eligible sessions and rejection reasons and exits with
+status 1 if any candidate is rejected.
+
 Use `claude` or `pi` for those transcript formats. The command verifies the
 import by exporting the native session. An identical retry reuses the same
 ID. Changed source history is rejected if the mirror already exists. Seeding
