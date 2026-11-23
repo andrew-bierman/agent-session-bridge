@@ -25,6 +25,7 @@ import {
   listForeignSessionCandidates,
   loadBridgeConfig,
   loadSourceSessionSnapshot,
+  loadOpenCodeDatabaseSnapshot,
   loadRegistry,
   saveRegistry,
   serializeBridgeConfig,
@@ -1846,8 +1847,12 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   if (command === "import-opencode") {
     const targetCwd = readOption(restWithFlags, "--target-cwd");
     const tool = readOption(restWithFlags, "--tool");
+    const fromDatabase = hasFlag(restWithFlags, "--database");
+    const database = readOption(restWithFlags, "--database");
     if (
-      rest.length === 0 ||
+      (fromDatabase
+        ? !database || database.startsWith("--") || rest.length !== 0
+        : rest.length === 0) ||
       (hasFlag(restWithFlags, "--target-cwd") &&
         (!targetCwd || targetCwd.startsWith("--"))) ||
       (hasFlag(restWithFlags, "--tool") &&
@@ -1856,26 +1861,44 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         tool !== "codex")
     ) {
       throw new Error(
-        "Usage: import-opencode <OpenCode v2 export.json>... [--dry-run] [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
+        "Usage: import-opencode <OpenCode v2 export.json>... or --database <OpenCode database> [--dry-run] [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
       );
     }
     let successful = 0;
     let rejected = 0;
     const destination = targetCwd ? resolve(cwd, targetCwd) : undefined;
-    for (const [index, source] of rest.entries()) {
-      const sourcePath = resolve(cwd, source);
+    const databasePath = database
+      ? await fs.realpath(resolve(cwd, database))
+      : undefined;
+    let version: string | undefined;
+    let sources = rest;
+    if (databasePath) {
+      version = execFileSync("opencode", ["--version"], {
+        encoding: "utf8",
+        timeout: 5000,
+      })
+        .trim()
+        .replace(/^opencode v/, "");
+      const { listOpenCodeSessionIds } =
+        await import("../../core/src/opencode-store.js");
+      sources = listOpenCodeSessionIds(databasePath, version);
+    }
+    for (const [index, source] of sources.entries()) {
+      const sourcePath = databasePath ?? resolve(cwd, source);
+      const label = databasePath ? `OpenCode ${source}` : `export ${index + 1}`;
       try {
         const reportOmissions = (count: number | undefined) => {
           if (count)
             deps.stdout(
-              `export ${index + 1}: ${count} system record${count === 1 ? "" : "s"} omitted`,
+              `${label}: ${count} system record${count === 1 ? "" : "s"} omitted`,
             );
         };
         if (dryRun) {
-          const snapshot = await loadSourceSessionSnapshot(
-            "opencode",
-            sourcePath,
-          );
+          const snapshot = version
+            ? await loadOpenCodeDatabaseSnapshot(sourcePath, version, source)
+            : await loadSourceSessionSnapshot("opencode", sourcePath);
+          if (version && !snapshot.chunks.length)
+            throw new Error("OpenCode session has no supported messages");
           const linked = findConversationByNativeSession(
             registry,
             "opencode",
@@ -1890,12 +1913,14 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
           }
           reportOmissions(snapshot.omittedSystemRecords);
           deps.stdout(
-            `export ${index + 1}: ${snapshot.chunks.length} supported messages; no writes`,
+            `${label}: ${snapshot.chunks.length} supported messages; no writes`,
           );
         } else {
           const result = await syncSourceSessionToTargets({
             sourceTool: "opencode",
             sourcePath,
+            sourceSessionId: version ? source : undefined,
+            openCodeDatabaseVersion: version,
             targetTools,
             targetCwd: destination,
             registryPath: resolveRegistryPath(homeDir),
@@ -1917,7 +1942,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
             : error instanceof Error
               ? error.message
               : "Unknown import error";
-        deps.stdout(`export ${index + 1} rejected: ${reason}`);
+        deps.stdout(`${label} rejected: ${reason}`);
       }
     }
     deps.stdout(

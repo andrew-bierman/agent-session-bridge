@@ -657,6 +657,13 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(inspectSeed().messages.at(-1)?.content).toEqual([
           { type: "text", text: "Batch sync reaches the second session" },
         ]);
+        const preview = execFileSync(
+          process.execPath,
+          [cli, "import-opencode", "--database", path, "--dry-run"],
+          options,
+        );
+        expect(preview).toContain("2 validated, 0 rejected");
+        expect(preview).toContain(`OpenCode ${seededId}:`);
         const beforeEdit = inspectSeed();
         const editedSource = readFileSync(source, "utf8").replace(
           "Fresh imported context",

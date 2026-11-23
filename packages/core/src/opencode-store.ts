@@ -47,6 +47,22 @@ export function readOpenCodeRows(
   }
 }
 
+export function listOpenCodeSessionIds(
+  path: string,
+  version: string,
+): string[] {
+  checkVersion(version);
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT id FROM session_v2 ORDER BY id")
+      .all()
+      .map((row) => String(row.id));
+  } finally {
+    db.close();
+  }
+}
+
 export function visitOpenCodeSessionRows(
   path: string,
   version: string,

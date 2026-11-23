@@ -1718,7 +1718,7 @@ async function returnLinkedTurnsUnderLock(params: {
   );
 }
 
-async function loadOpenCodeDatabaseSnapshot(
+export async function loadOpenCodeDatabaseSnapshot(
   path: string,
   version: string,
   id: string,
@@ -1726,7 +1726,10 @@ async function loadOpenCodeDatabaseSnapshot(
   const { visitOpenCodeSessionRows } = await import("./opencode-store.js");
   const chunks: SourceMessageChunk[] = [];
   let rawMessageCount = 0;
+  let omittedSystemRecords = 0;
   const session = visitOpenCodeSessionRows(path, version, id, (entry) => {
+    if ((entry as { type: string }).type === "system")
+      omittedSystemRecords += 1;
     const [chunk] = normalizeOpenCodeMessages([entry], rawMessageCount++);
     if (chunk) chunks.push(chunk);
   });
@@ -1738,6 +1741,7 @@ async function loadOpenCodeDatabaseSnapshot(
     updatedAt: session.updatedAt,
     chunks,
     rawMessageCount,
+    omittedSystemRecords,
   };
 }
 
@@ -1770,6 +1774,8 @@ async function syncSourceSessionUnderLock(params: {
           params.sourcePath,
           params.sourceSessionId,
         );
+  if (params.openCodeDatabaseVersion && !snapshot.chunks.length)
+    throw new Error("OpenCode session has no supported messages");
   const registry = await loadRegistry(params.registryPath, { readFile });
   const linked = findConversationByNativeSession(
     registry,
@@ -1846,6 +1852,14 @@ async function syncSourceSessionUnderLock(params: {
 
   if (params.sourceTool === "opencode") {
     const mirror = conversation.mirrors.opencode!;
+    if (params.openCodeDatabaseVersion) {
+      if (
+        mirror.openCodeDatabasePath &&
+        mirror.openCodeDatabasePath !== params.sourcePath
+      )
+        throw new Error("OpenCode session is linked to a different database");
+      mirror.openCodeDatabasePath = params.sourcePath;
+    }
     const digest = (count: number) => sourcePrefixDigest(snapshot, count);
     const prefix = mirror.exportPrefix;
     if (

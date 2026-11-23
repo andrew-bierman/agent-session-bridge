@@ -214,6 +214,16 @@ Files are processed in argument order. The command reports a rejection by
 argument number, continues through the batch, and returns a nonzero status if
 any file was rejected. A preview does not check destination conflicts.
 
+For a copied OpenCode 2.3.0 or 2.3.2 database, preview all native sessions
+without generating individual export files:
+
+```sh
+agent-session-bridge import-opencode --database /path/to/copy.db --dry-run
+```
+
+Remove `--dry-run` to write native mirrors. The OpenCode database is opened
+read-only. Sessions with no importable messages are reported individually.
+
 Use a fresh export of the same session to pick up new text messages. Identical
 exports do not duplicate messages. Settled tool calls with text results are
 carried as historical text, so the receiving client can read them without
