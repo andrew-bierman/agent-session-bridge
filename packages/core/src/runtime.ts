@@ -577,11 +577,13 @@ async function loadTargetCodexState(path: string): Promise<{
     return { count: 0, hasMeta: false };
   }
 
-  const items = await readCodexRollout(path);
-  return {
-    count: items.length,
-    hasMeta: items.some((item) => item.type === "session_meta"),
-  };
+  let count = 0;
+  let hasMeta = false;
+  for await (const item of iterateCodexRollout(path)) {
+    count += 1;
+    hasMeta ||= item.type === "session_meta";
+  }
+  return { count, hasMeta };
 }
 
 // shortcut: carry tool history as inert transcript text until every target can replay native tool pairs safely.
@@ -630,7 +632,10 @@ function openCodeHistoryBlock(block: any): { type: "text"; text: string }[] {
   ];
 }
 
-function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
+function normalizeOpenCodeMessages(
+  messages: any[],
+  startOffset = 0,
+): SourceMessageChunk[] {
   return messages.flatMap((entry, index) => {
     if (
       entry?.type === "agent-switched" ||
@@ -675,7 +680,7 @@ function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
     if (!content.length) return [];
     return [
       {
-        sourceOffset: index + 1,
+        sourceOffset: startOffset + index + 1,
         message: {
           id: entry.id,
           role: historical !== undefined ? "assistant" : entry.type,
@@ -1530,10 +1535,12 @@ function sourcePrefixDigest(
   );
 }
 
-function chunkDigest(chunks: SourceMessageChunk[]): string {
+function chunkDigest(chunks: Iterable<SourceMessageChunk>): string {
   const hash = createHash("sha256").update("[");
-  for (const [index, chunk] of chunks.entries()) {
-    if (index) hash.update(",");
+  let first = true;
+  for (const chunk of chunks) {
+    if (!first) hash.update(",");
+    first = false;
     hash.update(JSON.stringify(chunk));
   }
   return hash.update("]").digest("hex");
@@ -1608,13 +1615,21 @@ async function returnLinkedTurnsUnderLock(params: {
   );
   const { count, digest } = target.exportPrefix;
   if (rows.length < count) throw new Error("OpenCode history diverged");
-  const prefix = normalizeOpenCodeMessages(
-    rows.slice(0, count).map((row) => ({
-      ...JSON.parse(row.data),
-      type: row.type,
-      id: row.id,
-    })),
-  );
+  const prefix = (function* () {
+    for (let index = 0; index < count; index++) {
+      const row = rows[index]!;
+      yield* normalizeOpenCodeMessages(
+        [
+          {
+            ...JSON.parse(row.data),
+            type: row.type,
+            id: row.id,
+          },
+        ],
+        index,
+      );
+    }
+  })();
   if (chunkDigest(prefix) !== digest) {
     throw new Error("OpenCode history diverged");
   }
@@ -1643,6 +1658,7 @@ async function returnLinkedTurnsUnderLock(params: {
       });
     }
   }
+  if (!pending.length) return 0;
   return appendOpenCodeMessages(
     params.databasePath,
     params.version,
@@ -1652,10 +1668,34 @@ async function returnLinkedTurnsUnderLock(params: {
   );
 }
 
+async function loadOpenCodeDatabaseSnapshot(
+  path: string,
+  version: string,
+  id: string,
+): Promise<SourceSessionSnapshot> {
+  const { visitOpenCodeSessionRows } = await import("./opencode-store.js");
+  const chunks: SourceMessageChunk[] = [];
+  let rawMessageCount = 0;
+  const session = visitOpenCodeSessionRows(path, version, id, (entry) => {
+    const [chunk] = normalizeOpenCodeMessages([entry], rawMessageCount++);
+    if (chunk) chunks.push(chunk);
+  });
+  return {
+    sourceTool: "opencode",
+    sourcePath: path,
+    sourceSessionId: id,
+    cwd: session.directory,
+    updatedAt: session.updatedAt,
+    chunks,
+    rawMessageCount,
+  };
+}
+
 async function syncSourceSessionUnderLock(params: {
   sourceTool: ToolName;
   sourcePath: string;
   sourceSessionId?: string;
+  openCodeDatabaseVersion?: string;
   targetCwd?: string;
   registryPath: string;
   homeDir: string;
@@ -1666,11 +1706,20 @@ async function syncSourceSessionUnderLock(params: {
     throw new Error("OpenCode target sync is not available");
   }
   const now = params.now ?? new Date();
-  const snapshot = await loadSourceSessionSnapshot(
-    params.sourceTool,
-    params.sourcePath,
-    params.sourceSessionId,
-  );
+  const snapshot =
+    params.sourceTool === "opencode" &&
+    params.openCodeDatabaseVersion &&
+    params.sourceSessionId
+      ? await loadOpenCodeDatabaseSnapshot(
+          params.sourcePath,
+          params.openCodeDatabaseVersion,
+          params.sourceSessionId,
+        )
+      : await loadSourceSessionSnapshot(
+          params.sourceTool,
+          params.sourcePath,
+          params.sourceSessionId,
+        );
   const registry = await loadRegistry(params.registryPath, { readFile });
   const linked = findConversationByNativeSession(
     registry,

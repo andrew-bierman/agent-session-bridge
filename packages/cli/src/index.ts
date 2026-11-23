@@ -1743,11 +1743,12 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         join(tmpdir(), "bridge-opencode-export-"),
       );
       try {
-        const sourcePath = join(directory, "session.json");
-        await exportOpenCodeSession(id, sourcePath, cwd, {
-          ...process.env,
-          OPENCODE_DB: databasePath,
-        });
+        const sourcePath = linkedDatabase ?? join(directory, "session.json");
+        if (!linkedDatabase)
+          await exportOpenCodeSession(id, sourcePath, cwd, {
+            ...process.env,
+            OPENCODE_DB: databasePath,
+          });
         const tool = linked?.mirrors.opencode?.seedTool ?? "codex";
         const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
         const registryPath = resolveRegistryPath(homeDir);
@@ -1755,6 +1756,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
           sourceTool: "opencode",
           sourcePath,
           sourceSessionId: id,
+          openCodeDatabaseVersion: linkedDatabase ? version : undefined,
           targetTools: [tool],
           registryPath,
           homeDir,

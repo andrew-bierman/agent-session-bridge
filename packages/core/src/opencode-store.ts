@@ -47,6 +47,40 @@ export function readOpenCodeRows(
   }
 }
 
+export function visitOpenCodeSessionRows(
+  path: string,
+  version: string,
+  sessionId: string,
+  visit: (entry: unknown) => void,
+) {
+  checkVersion(version);
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    db.exec("BEGIN");
+    const session = db
+      .prepare("SELECT directory, time_updated FROM session_v2 WHERE id = ?")
+      .get(sessionId);
+    if (
+      typeof session?.directory !== "string" ||
+      typeof session.time_updated !== "number"
+    )
+      throw new Error("OpenCode session does not exist");
+    for (const row of db
+      .prepare(
+        "SELECT id, type, data FROM session_message WHERE session_id = ? ORDER BY seq",
+      )
+      .iterate(sessionId)) {
+      visit({ ...JSON.parse(String(row.data)), type: row.type, id: row.id });
+    }
+    return {
+      directory: session.directory,
+      updatedAt: new Date(session.time_updated).toISOString(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 export function verifyOpenCodeSeedRows(
   path: string,
   version: string,
