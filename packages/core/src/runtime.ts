@@ -365,6 +365,13 @@ async function upsertCodexThreadIndex(params: {
     buildSqlAssignment("memory_mode", "enabled"),
     buildSqlAssignment("model", "gpt-5.4"),
     buildSqlAssignment("reasoning_effort", "medium"),
+    // Codex's resume picker skips rows with an empty preview.
+    buildSqlAssignment("preview", params.firstUserMessage),
+    buildSqlAssignment("thread_source", "user"),
+    buildSqlAssignment("created_at_ms", createdAtSeconds * 1000),
+    buildSqlAssignment("updated_at_ms", updatedAtSeconds * 1000),
+    buildSqlAssignment("recency_at", updatedAtSeconds),
+    buildSqlAssignment("recency_at_ms", updatedAtSeconds * 1000),
   ].filter((assignment) => availableColumns.has(assignment.column));
 
   const insertColumns = requestedAssignments.map(

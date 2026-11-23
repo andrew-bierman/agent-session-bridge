@@ -119,6 +119,26 @@ describe("converters", () => {
     expect(convertCodexItemToNormalized(item)).toBeNull();
   });
 
+  it("skips the AGENTS.md bootstrap block that has no directory suffix", () => {
+    const item: CodexRolloutItem = {
+      type: "response_item",
+      payload: {
+        id: "codex-bootstrap-3",
+        type: "message",
+        role: "user",
+        timestamp: "2026-04-05T10:00:00.000Z",
+        content: [
+          {
+            type: "input_text",
+            text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nUse small commits.\n</INSTRUCTIONS>",
+          },
+        ],
+      },
+    };
+
+    expect(convertCodexItemToNormalized(item)).toBeNull();
+  });
+
   it("skips Codex turn-aborted marker messages", () => {
     const item: CodexRolloutItem = {
       type: "response_item",

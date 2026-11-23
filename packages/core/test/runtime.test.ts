@@ -526,6 +526,19 @@ CREATE TABLE threads (
       await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
     ).toBe(false);
 
+    // Newer Codex builds add these columns; the picker hides rows without a preview.
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+ALTER TABLE threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN thread_source TEXT;
+ALTER TABLE threads ADD COLUMN created_at_ms INTEGER;
+ALTER TABLE threads ADD COLUMN updated_at_ms INTEGER;
+ALTER TABLE threads ADD COLUMN recency_at INTEGER;
+ALTER TABLE threads ADD COLUMN recency_at_ms INTEGER;
+      `,
+    ]);
+
     const backfilled = await backfillCodexThreadIndex({
       homeDir,
       threadId: codexMirror.nativeId,
@@ -548,6 +561,16 @@ CREATE TABLE threads (
     expect(indexedRow).toContain(codexMirror.nativeId);
     expect(indexedRow).toContain(projectDir);
     expect(indexedRow).toContain("Fix auth");
+
+    const pickerRow = execFileSync("sqlite3", [
+      stateDbPath,
+      `select preview || '|' || thread_source || '|' || (updated_at_ms > 0) from threads where id='${codexMirror.nativeId}';`,
+    ])
+      .toString()
+      .trim();
+
+    expect(pickerRow).toContain("Fix auth");
+    expect(pickerRow).toMatch(/\|user\|1$/);
   });
 
   it("anchors later Pi imports to the current Claude transcript head", async () => {
