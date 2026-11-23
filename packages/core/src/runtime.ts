@@ -3,6 +3,7 @@ import {
   appendFile,
   mkdir,
   lstat,
+  open,
   realpath,
   readFile,
   readdir,
@@ -230,16 +231,36 @@ async function walkJsonlFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-async function appendJsonLines(path: string, items: unknown[]): Promise<void> {
-  if (items.length === 0) {
+async function appendJsonLines(
+  path: string,
+  items: unknown[],
+  checkBoundary: boolean,
+): Promise<void> {
+  if (!items.length) return;
+  await mkdir(dirname(path), { recursive: true });
+  const records = items.map((item) => JSON.stringify(item)).join("\n") + "\n";
+  if (!checkBoundary) {
+    await appendFile(path, records, "utf8");
     return;
   }
-  await mkdir(dirname(path), { recursive: true });
-  await appendFile(
-    path,
-    `${items.map((item) => JSON.stringify(item)).join("\n")}\n`,
-    "utf8",
-  );
+  const file = await open(path, "a+");
+  try {
+    const { size } = await file.stat();
+    const last = Buffer.alloc(1);
+    if (size) {
+      const { bytesRead } = await file.read(last, 0, 1, size - 1);
+      if (bytesRead !== 1)
+        throw new Error(
+          "Target transcript changed while checking its last record",
+        );
+    }
+    await file.appendFile(
+      size && last[0] !== 10 ? "\n" + records : records,
+      "utf8",
+    );
+  } finally {
+    await file.close();
+  }
 }
 
 function extractCodexThreadTitleAndFirstUserMessage(
@@ -1057,7 +1078,7 @@ async function appendToPiMirror(
       continue;
     }
 
-    await appendJsonLines(mirror.sessionPath, [entry]);
+    await appendJsonLines(mirror.sessionPath, [entry], appendedCount === 0);
     appendedCount += 1;
     count += 1;
     nextWatermarks = applySyncDecision(nextWatermarks, decision);
@@ -1116,7 +1137,7 @@ async function appendToClaudeMirror(
       continue;
     }
 
-    await appendJsonLines(mirror.sessionPath, [line]);
+    await appendJsonLines(mirror.sessionPath, [line], appendedCount === 0);
     appendedCount += 1;
     count += 1;
     nextWatermarks = applySyncDecision(nextWatermarks, decision);
@@ -1167,12 +1188,16 @@ async function appendToCodexMirror(
     );
 
     if (sessionMeta) {
-      await appendJsonLines(mirror.sessionPath, [
-        {
-          timestamp: chunks[0]!.message.timestamp,
-          ...sessionMeta,
-        },
-      ]);
+      await appendJsonLines(
+        mirror.sessionPath,
+        [
+          {
+            timestamp: chunks[0]!.message.timestamp,
+            ...sessionMeta,
+          },
+        ],
+        true,
+      );
       count += 1;
       appendedCount += 1;
       hasMeta = true;
@@ -1214,7 +1239,7 @@ async function appendToCodexMirror(
       continue;
     }
 
-    await appendJsonLines(mirror.sessionPath, lines);
+    await appendJsonLines(mirror.sessionPath, lines, appendedCount === 0);
     appendedCount += lines.length;
     count += lines.length;
     hasMeta = true;
