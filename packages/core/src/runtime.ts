@@ -2,6 +2,7 @@ import {
   access,
   appendFile,
   mkdir,
+  lstat,
   realpath,
   readFile,
   readdir,
@@ -1929,13 +1930,26 @@ async function syncSourceSessionUnderLock(params: {
       );
     let linkedOffset = linkedImportOffset(conversation, tool);
     if ((suffix.length || linkedMirror?.seedPrefix) && linkedMirror) {
-      const linkedSnapshot = await loadSourceSessionSnapshot(
-        tool,
-        linkedMirror.sessionPath,
-      );
+      let linkedPath = linkedMirror.sessionPath;
+      if (
+        tool === "codex" &&
+        linkedMirror.seedPrefix &&
+        linkedPath.endsWith(".jsonl.zst")
+      ) {
+        const reopened = linkedPath.slice(0, -4);
+        const candidate = await lstat(reopened).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+          },
+        );
+        if (candidate?.isFile()) linkedPath = reopened;
+      }
+      const linkedSnapshot = await loadSourceSessionSnapshot(tool, linkedPath);
       if (linkedSnapshot.sourceSessionId !== linkedMirror.nativeId)
         throw new Error("Linked session identity changed");
       verifySeedPrefix(linkedMirror, linkedSnapshot);
+      linkedMirror.sessionPath = linkedPath;
       const pending = linkedSnapshot.chunks.filter(
         (chunk) => chunk.sourceOffset > linkedOffset,
       );

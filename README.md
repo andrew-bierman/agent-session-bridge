@@ -326,4 +326,6 @@ text turns and settled tool history with that transcript. A changed seed prefix 
 on both sides stop sync.
 
 Compressed Codex rollouts can seed OpenCode. The bridge refuses to append
-new turns directly to the compressed file.
+new turns directly to the compressed file. If a writable sibling rollout
+appears at the same path without the `.zst` suffix, sync checks its native
+ID and history prefix before following it.

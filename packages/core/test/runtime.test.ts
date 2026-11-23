@@ -947,4 +947,24 @@ it("keeps compressed Codex rollouts byte-for-byte intact when OpenCode advances"
   );
   await expect(sync()).rejects.toThrow("Compressed Codex rollouts");
   expect(await readFile(sourcePath)).toEqual(original);
+  const writable = sourcePath.slice(0, -4);
+  const source = await readFile(
+    join(fixturesDir, "codex-rollout.jsonl"),
+    "utf8",
+  );
+  await writeFile(
+    writable,
+    source.replace("Fix auth", "Changed original prompt"),
+  );
+  await expect(sync()).rejects.toThrow("Original Codex seed history diverged");
+  await writeFile(writable, source);
+  const reopened = await sync();
+  expect(reopened.writes[0]).toMatchObject({
+    sessionPath: writable,
+    targetSessionId: "019cdef0-2584-7a14-8020-123456789abc",
+  });
+  expect(reopened.writes[0]?.appendedCount).toBeGreaterThan(0);
+  expect(await readFile(writable, "utf8")).toContain("A new OpenCode question");
+  expect((await sync()).writes[0]?.appendedCount).toBe(0);
+  expect(await readFile(sourcePath)).toEqual(original);
 });
