@@ -68,7 +68,12 @@ function withoutFlags(args: string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index]!;
     if (value.startsWith("--")) {
-      if (value === "--cwd" || value === "--tool" || value === "--target-cwd") {
+      if (
+        value === "--cwd" ||
+        value === "--tool" ||
+        value === "--target-cwd" ||
+        value === "--database"
+      ) {
         index += 1;
       }
       continue;
@@ -1513,14 +1518,21 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   if (command === "seed-opencode") {
     const [tool, ...paths] = rest;
+    const batch = hasFlag(restWithFlags, "--database");
+    const fallback = readOption(restWithFlags, "--target-cwd");
+    const fallbackFlag = hasFlag(restWithFlags, "--target-cwd");
+    const batchDatabase = readOption(restWithFlags, "--database");
     if (
       (tool !== "codex" && tool !== "claude" && tool !== "pi") ||
-      (dryRun
-        ? paths.length === 0 || restWithFlags.length !== rest.length + 1
-        : paths.length !== 2 || restWithFlags.length !== rest.length)
+      (batch && (dryRun || !batchDatabase || batchDatabase.startsWith("--"))) ||
+      (fallbackFlag && (!batch || !fallback || fallback.startsWith("--"))) ||
+      paths.length === 0 ||
+      (!dryRun && !batch && paths.length !== 2) ||
+      restWithFlags.length !==
+        rest.length + (dryRun ? 1 : batch ? 2 : 0) + (fallbackFlag ? 2 : 0)
     ) {
       throw new Error(
-        "Usage: seed-opencode <codex|claude|pi> <transcript> <OpenCode database path>, or seed-opencode <codex|claude|pi> <transcript>... --dry-run",
+        "Usage: seed-opencode <codex|claude|pi> <transcript> <database>, seed-opencode <codex|claude|pi> <transcript>... --database <database> [--target-cwd <fallback directory>], or seed-opencode <codex|claude|pi> <transcript>... --dry-run",
       );
     }
     const project = await fs.realpath(cwd);
@@ -1546,13 +1558,16 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       );
       return rejected ? 1 : 0;
     }
-    const [transcript, database] = paths as [string, string];
-    const databasePath = await fs.realpath(resolve(cwd, database));
-    const sourcePath = await fs.realpath(resolve(cwd, transcript));
+    const databasePath = await fs.realpath(
+      resolve(cwd, batchDatabase ?? paths[1]!),
+    );
+    const fallbackCwd = fallback
+      ? await fs.realpath(resolve(cwd, fallback))
+      : undefined;
     const env = { ...process.env, OPENCODE_DB: databasePath };
-    const opencode = (args: string[]) =>
+    const opencode = (args: string[], directory = cwd) =>
       execFileSync("opencode", args, {
-        cwd,
+        cwd: directory,
         env,
         encoding: "utf8",
         timeout: 30000,
@@ -1573,9 +1588,15 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       try {
         const path = join(directory, "session.json");
         await fs.writeFile(path, JSON.stringify(bundle), { mode: 0o600 });
-        opencode(["session", "import", "--standalone", path]);
+        opencode(
+          ["session", "import", "--standalone", path],
+          bundle.info.location.directory,
+        );
         const actual = JSON.parse(
-          opencode(["session", "export", "--standalone", bundle.info.id]),
+          opencode(
+            ["session", "export", "--standalone", bundle.info.id],
+            bundle.info.location.directory,
+          ),
         );
         if (
           actual.info?.id !== bundle.info.id ||
@@ -1598,22 +1619,39 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
           throw new Error(
             "OpenCode mirror differs from the source; no existing history was overwritten",
           );
-        deps.stdout(
-          `OpenCode ${bundle.info.id}: verified ${bundle.messages.length} seeded messages`,
-        );
       } finally {
         await fs.rm(directory, { force: true, recursive: true });
       }
     };
-    await seedLinkedSessionInOpenCode({
-      tool,
-      sourcePath,
-      cwd: project,
-      databasePath,
-      registryPath: resolveRegistryPath(homeDir),
-      importVerified,
-    });
-    return 0;
+    const seed = async (path: string) => {
+      const bundle = await seedLinkedSessionInOpenCode({
+        tool,
+        sourcePath: await fs.realpath(resolve(cwd, path)),
+        cwd: batch ? undefined : project,
+        fallbackCwd,
+        databasePath,
+        registryPath: resolveRegistryPath(homeDir),
+        importVerified,
+      });
+      return `OpenCode ${bundle.info.id}: verified ${bundle.messages.length} seeded messages`;
+    };
+    if (!batch) {
+      deps.stdout(await seed(paths[0]!));
+      return 0;
+    }
+    let rejected = 0;
+    for (const path of paths) {
+      try {
+        deps.stdout(`${path}: ${await seed(path)}`);
+      } catch (error) {
+        rejected += 1;
+        deps.stdout(`${path}: rejected (${(error as Error).message})`);
+      }
+    }
+    deps.stdout(
+      `${paths.length - rejected} imported or verified, ${rejected} rejected`,
+    );
+    return rejected ? 1 : 0;
   }
 
   if (command === "sync-opencode") {

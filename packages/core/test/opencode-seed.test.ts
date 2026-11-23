@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,6 +315,8 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
     const firstRecord = JSON.parse(original.split("\n")[0]!);
     const nativeId =
       firstRecord.payload?.id ?? firstRecord.sessionId ?? firstRecord.id;
+    const fallback = join(root, "fallback");
+    mkdirSync(fallback);
     const rich = join(root, "tool-history.jsonl");
     writeFileSync(
       rich,
@@ -319,7 +328,27 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
         .replaceAll("claude-session-1", "rich-claude-session")
         .replaceAll("pi-session-1", "rich-pi-session"),
     );
-    const importedRich = run(bridge, "seed-opencode", tool, rich, database);
+    const batch = () =>
+      run(
+        bridge,
+        "seed-opencode",
+        tool,
+        join(root, "missing.jsonl"),
+        rich,
+        "--database",
+        database,
+        "--target-cwd",
+        fallback,
+      );
+    let importedRich: string;
+    try {
+      batch();
+      throw new Error("Expected a nonzero status for the missing transcript");
+    } catch (error) {
+      expect(error).toMatchObject({ status: 1 });
+      importedRich = (error as { stdout: string }).stdout;
+    }
+    expect(importedRich).toContain("1 imported or verified, 1 rejected");
     const richId = importedRich.match(
       /OpenCode (ses_[a-zA-Z0-9]+): verified 3 seeded messages/,
     )?.[1];
@@ -327,12 +356,24 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
     const richExport = JSON.parse(
       run("opencode", "session", "export", "--standalone", richId!),
     );
+    expect(richExport.info.location.directory).toBe(realpathSync(fallback));
     expect(
       richExport.messages.map((message: { type: string }) => message.type),
     ).toEqual(["user", "assistant", "assistant"]);
     expect(richExport.messages.at(-1)?.content).toEqual([
       { type: "text", text: expect.stringContaining("file contents") },
     ]);
+    try {
+      batch();
+      throw new Error(
+        "Expected the batch retry to report the missing transcript again",
+      );
+    } catch (error) {
+      expect(error).toMatchObject({ status: 1, stdout: importedRich });
+    }
+    expect(
+      JSON.parse(run("opencode", "session", "export", "--standalone", richId!)),
+    ).toEqual(richExport);
     const sync = () => run(bridge, "sync-opencode", id!, database);
     const version = run("opencode", "--version")
       .trim()

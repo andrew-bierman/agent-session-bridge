@@ -1394,17 +1394,32 @@ function buildOpenCodeSeed(
 export async function seedLinkedSessionInOpenCode(params: {
   tool: Exclude<ToolName, "opencode">;
   sourcePath: string;
-  cwd: string;
+  cwd?: string;
+  fallbackCwd?: string;
   databasePath: string;
   registryPath: string;
   importVerified: (
     bundle: ReturnType<typeof buildOpenCodeSeed>,
   ) => Promise<void>;
-}): Promise<void> {
-  await withRegistryWriteLock(params.registryPath, async () => {
+}) {
+  return withRegistryWriteLock(params.registryPath, async () => {
     const { tool } = params;
     const source = await loadSourceSessionSnapshot(tool, params.sourcePath);
-    const bundle = buildOpenCodeSeed(tool, source, params.cwd);
+    const cwd =
+      params.cwd ??
+      (await realpath(source.cwd).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" && params.fallbackCwd)
+          return params.fallbackCwd;
+        if (error.code === "ENOENT")
+          throw new Error(
+            "Source project directory is missing; supply --target-cwd with an existing fallback",
+            { cause: error },
+          );
+        throw error;
+      }));
+    if (!(await stat(cwd)).isDirectory())
+      throw new Error("Source project must be a directory");
+    const bundle = buildOpenCodeSeed(tool, source, cwd);
     const registry = await loadRegistry(params.registryPath, { readFile });
     const linked = findConversationByNativeSession(
       registry,
@@ -1420,7 +1435,7 @@ export async function seedLinkedSessionInOpenCode(params: {
       (linked?.mirrors.opencode &&
         linked.mirrors.opencode.nativeId !== bundle.info.id) ||
       (existing && existing.bridgeSessionId !== linked?.bridgeSessionId) ||
-      (linked && linked.canonicalCwd !== params.cwd) ||
+      (linked && linked.canonicalCwd !== cwd) ||
       (linked?.mirrors[tool]?.sessionPath &&
         linked.mirrors[tool].sessionPath !== params.sourcePath)
     ) {
@@ -1429,9 +1444,9 @@ export async function seedLinkedSessionInOpenCode(params: {
       );
     }
     await params.importVerified(bundle);
-    if (existing) return;
+    if (existing) return bundle;
 
-    const { projectKey, canonicalCwd } = await deriveProjectKey(params.cwd, {
+    const { projectKey, canonicalCwd } = await deriveProjectKey(cwd, {
       realpath,
       findRepoRoot: async (cwd) => findGitRepoRoot(cwd, { exists }),
     });
@@ -1475,6 +1490,7 @@ export async function seedLinkedSessionInOpenCode(params: {
         rename,
       },
     );
+    return bundle;
   });
 }
 
