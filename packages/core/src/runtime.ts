@@ -1477,9 +1477,33 @@ function buildOpenCodeSeed(
   };
 }
 
+export async function readSeedSourceId(
+  tool: Exclude<ToolName, "opencode">,
+  path: string,
+): Promise<string | undefined> {
+  for await (const record of iterateCodexRollout(path)) {
+    const item = record as unknown as {
+      type: string;
+      id?: unknown;
+      sessionId?: unknown;
+      payload?: { id?: unknown };
+    };
+    const id =
+      tool === "claude"
+        ? item.sessionId
+        : tool === "pi" && item.type === "session"
+          ? item.id
+          : tool === "codex" && item.type === "session_meta"
+            ? item.payload?.id
+            : undefined;
+    if (typeof id === "string") return id;
+  }
+}
+
 export async function seedLinkedSessionInOpenCode(params: {
   tool: Exclude<ToolName, "opencode">;
   sourcePath: string;
+  expectedSourceId?: string;
   cwd?: string;
   fallbackCwd?: string;
   allowIncompleteTools?: boolean;
@@ -1493,6 +1517,12 @@ export async function seedLinkedSessionInOpenCode(params: {
   return withRegistryWriteLock(params.registryPath, async () => {
     const { tool } = params;
     const source = await loadSourceSessionSnapshot(tool, params.sourcePath);
+    if (
+      params.expectedSourceId &&
+      source.sourceSessionId !== params.expectedSourceId
+    )
+      throw new Error("Source session identity changed during backfill");
+
     const cwd =
       params.cwd ??
       (await realpath(source.cwd).catch((error: NodeJS.ErrnoException) => {

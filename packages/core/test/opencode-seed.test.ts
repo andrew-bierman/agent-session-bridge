@@ -372,6 +372,45 @@ it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
         "--target-cwd",
         fallback,
       );
+    const duplicate = join(root, "duplicate.jsonl");
+    writeFileSync(
+      duplicate,
+      readFileSync(rich, "utf8").replace("Fix auth", "Divergent branch"),
+    );
+    const conflicting = () =>
+      run(
+        bridge,
+        "seed-opencode",
+        tool,
+        rich,
+        duplicate,
+        "--database",
+        database,
+        "--target-cwd",
+        fallback,
+      );
+    try {
+      conflicting();
+      throw new Error(
+        "Expected both conflicting files to be rejected before writes",
+      );
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 1,
+        stdout: expect.stringContaining("0 imported or verified, 2 rejected"),
+      });
+    }
+    const checkConflicts = () =>
+      run(bridge, "seed-opencode", tool, rich, duplicate, "--dry-run");
+    try {
+      checkConflicts();
+      throw new Error("Expected a nonzero status for both duplicate claims");
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 1,
+        stdout: expect.stringContaining("0 validated, 2 rejected"),
+      });
+    }
     let importedRich: string;
     try {
       batch();

@@ -14,6 +14,7 @@ import {
   createDefaultConfig,
   createOpenCodeSeed,
   seedLinkedSessionInOpenCode,
+  readSeedSourceId,
   returnLinkedTurnsToOpenCode,
   findConversationByBridgeSessionId,
   findConversationByNativeSession,
@@ -1565,10 +1566,31 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       );
     }
     const project = await fs.realpath(cwd);
+    const sourceIds = new Map<string, string>();
+    const conflictingIds = new Set<string>();
+    const firstPaths = new Map<string, string>();
+    for (const path of dryRun || batch ? paths : []) {
+      try {
+        const canonical = await fs.realpath(resolve(cwd, path));
+        const id = await readSeedSourceId(tool, canonical);
+        if (!id) continue;
+        const first = firstPaths.get(id);
+        if (first && first !== canonical) conflictingIds.add(id);
+        firstPaths.set(id, canonical);
+        sourceIds.set(path, id);
+      } catch {
+        // The seed pass reports unreadable and malformed transcripts per path.
+      }
+    }
     if (dryRun) {
       let rejected = 0;
       for (const path of paths) {
         try {
+          const id = sourceIds.get(path);
+          if (id && conflictingIds.has(id))
+            throw new Error(
+              "Multiple source files claim the same native session ID",
+            );
           const bundle = await createOpenCodeSeed(
             tool,
             resolve(cwd, path),
@@ -1691,9 +1713,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         await fs.rm(directory, { force: true, recursive: true });
       }
     };
-    const seed = async (path: string) => {
+    const seed = async (path: string, expectedSourceId?: string) => {
       const bundle = await seedLinkedSessionInOpenCode({
         tool,
+        expectedSourceId,
         sourcePath: await fs.realpath(resolve(cwd, path)),
         cwd: batch ? undefined : project,
         fallbackCwd,
@@ -1711,7 +1734,12 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     let rejected = 0;
     for (const path of paths) {
       try {
-        deps.stdout(`${path}: ${await seed(path)}`);
+        const id = sourceIds.get(path);
+        if (id && conflictingIds.has(id))
+          throw new Error(
+            "Multiple source files claim the same native session ID",
+          );
+        deps.stdout(`${path}: ${await seed(path, id)}`);
       } catch (error) {
         rejected += 1;
         deps.stdout(`${path}: rejected (${(error as Error).message})`);

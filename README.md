@@ -306,8 +306,9 @@ agent-session-bridge seed-opencode codex /path/to/rollout-*.jsonl --database /pa
 
 Each candidate is verified independently. Use `--target-cwd DIRECTORY` to
 provide a fallback for transcripts whose original project no longer exists.
-The batch continues after a rejected candidate and returns status 1 if any
-candidate is rejected.
+A batch rejects distinct files claiming the same native session ID before
+importing either claim. It continues with the other candidates and returns
+status 1 if any candidate is rejected.
 
 Use `claude` or `pi` for those transcript formats. The command verifies the
 import by exporting the native session. An identical retry reuses the same
