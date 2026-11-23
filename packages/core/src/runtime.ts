@@ -37,6 +37,7 @@ import {
 import {
   readClaudeCodeSession,
   readCodexRollout,
+  iterateCodexRollout,
   readPiSession,
 } from "./parsers.js";
 import {
@@ -783,34 +784,30 @@ export async function loadSourceSessionSnapshot(
     };
   }
 
-  const items = await readCodexRollout(sourcePath);
-  const sessionMeta = items.find((item) => item.type === "session_meta");
-  const sourceSessionId =
-    explicitSessionId ??
-    (typeof sessionMeta?.payload.id === "string"
-      ? sessionMeta.payload.id
-      : undefined) ??
-    deterministicUuid(sourcePath);
-  const cwd =
-    (typeof sessionMeta?.payload.cwd === "string"
-      ? sessionMeta.payload.cwd
-      : undefined) ?? "/";
-  const timestamps = items
-    .map((item) => getCodexItemTimestamp(item))
-    .filter((value): value is string => Boolean(value));
+  let sessionMeta: Record<string, unknown> | undefined;
+  let updatedAt = info.mtime.toISOString();
+  let sourceOffset = 0;
+  const chunks: SourceMessageChunk[] = [];
+  for await (const item of iterateCodexRollout(sourcePath)) {
+    sourceOffset += 1;
+    if (item.type === "session_meta") sessionMeta ??= item.payload;
+    const timestamp = getCodexItemTimestamp(item);
+    if (timestamp) updatedAt = timestamp;
+    const message = convertCodexItemToNormalized(item);
+    if (message) chunks.push({ sourceOffset, message });
+  }
 
   return {
     sourceTool,
     sourcePath,
-    sourceSessionId,
-    cwd,
-    updatedAt: timestamps.at(-1) ?? info.mtime.toISOString(),
-    chunks: items.flatMap((item, index) => {
-      const normalized = convertCodexItemToNormalized(item);
-      return normalized
-        ? [{ sourceOffset: index + 1, message: normalized }]
-        : [];
-    }),
+    sourceSessionId:
+      explicitSessionId ??
+      (typeof sessionMeta?.id === "string"
+        ? sessionMeta.id
+        : deterministicUuid(sourcePath)),
+    cwd: typeof sessionMeta?.cwd === "string" ? sessionMeta.cwd : "/",
+    updatedAt,
+    chunks,
   };
 }
 

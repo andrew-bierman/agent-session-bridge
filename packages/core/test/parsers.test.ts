@@ -64,4 +64,16 @@ describe("session parsers", () => {
     expect(compressed).toHaveLength(4);
     expect(compressed[0]?.type).toBe("session_meta");
   });
+  it("reports missing and malformed streamed Codex rollouts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "asb-stream-errors-"));
+    const path = join(dir, "rollout.jsonl");
+    await expect(readCodexRollout(path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await writeFile(path, '{"type":"event_msg"}\r\n\r\ninvalid JSON');
+    await expect(readCodexRollout(path)).rejects.toThrow(SyntaxError);
+    const compressed = path + ".zst";
+    await writeFile(compressed, "invalid compressed data");
+    await expect(readCodexRollout(compressed)).rejects.toThrow();
+  });
 });
