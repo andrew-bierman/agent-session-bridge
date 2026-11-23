@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   createDefaultConfig,
@@ -86,11 +86,7 @@ describe("codex hooks", () => {
   it("discovers a rollout path from session context", () => {
     const date = new Date(2026, 3, 5, 10, 0, 0);
     const threadId = generateCodexThreadId(date);
-    const path = discoverRolloutPath(
-      threadId,
-      date,
-      "/tmp/demo/.codex",
-    );
+    const path = discoverRolloutPath(threadId, date, "/tmp/demo/.codex");
     expect(path).toBe(
       join(
         "/tmp/demo/.codex",

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   backfillCodexThreadIndex,
@@ -259,7 +259,9 @@ describe("runtime sync flows", () => {
       "claude",
     );
 
-    expect(candidates.map((candidate) => candidate.path)).toContain(validPiPath);
+    expect(candidates.map((candidate) => candidate.path)).toContain(
+      validPiPath,
+    );
     expect(candidates.map((candidate) => candidate.path)).not.toContain(
       malformedPiPath,
     );
@@ -312,7 +314,11 @@ describe("runtime sync flows", () => {
         },
       },
     };
-    await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(registry, null, 2)}\n`,
+      "utf8",
+    );
 
     const repairedRun = await syncSourceSessionToTargets({
       sourceTool: "pi",
@@ -357,7 +363,9 @@ describe("runtime sync flows", () => {
 
     const codexMirrorPath = firstRun.conversation.mirrors.codex?.sessionPath;
     expect(codexMirrorPath).toBeTruthy();
-    expect(firstRun.conversation.mirrors.codex?.seededSourceOffset).toBeTruthy();
+    expect(
+      firstRun.conversation.mirrors.codex?.seededSourceOffset,
+    ).toBeTruthy();
 
     const codexReplay = await syncSourceSessionToTargets({
       sourceTool: "codex",
@@ -429,7 +437,9 @@ describe("runtime sync flows", () => {
     const registry = await loadRegistry(registryPath, { readFile });
     expect(registry.conversations).toHaveLength(2);
 
-    const firstPi = await readPiSession(firstRun.conversation.mirrors.pi!.sessionPath);
+    const firstPi = await readPiSession(
+      firstRun.conversation.mirrors.pi!.sessionPath,
+    );
     const secondPi = await readPiSession(
       secondRun.conversation.mirrors.pi!.sessionPath,
     );
@@ -587,9 +597,9 @@ CREATE TABLE threads (
       `delete from threads where id='${codexMirror.nativeId}';`,
     ]);
 
-    expect(
-      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
-    ).toBe(false);
+    expect(await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId)).toBe(
+      false,
+    );
 
     // Newer Codex builds add these columns; the picker hides rows without a preview.
     execFileSync("sqlite3", [
@@ -612,9 +622,9 @@ ALTER TABLE threads ADD COLUMN recency_at_ms INTEGER;
     });
 
     expect(backfilled.indexed).toBe(true);
-    expect(
-      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
-    ).toBe(true);
+    expect(await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId)).toBe(
+      true,
+    );
 
     const indexedRow = execFileSync("sqlite3", [
       stateDbPath,

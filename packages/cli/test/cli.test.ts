@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   getClaudeCodeProjectDir,
@@ -476,9 +476,9 @@ CREATE TABLE threads (
       .toString()
       .trim();
     expect(indexedRow).toContain(codexThreadId);
-    expect(lines.some((line) => line.includes("reindexed 1 Codex mirrors"))).toBe(
-      true,
-    );
+    expect(
+      lines.some((line) => line.includes("reindexed 1 Codex mirrors")),
+    ).toBe(true);
   });
 
   it("audits the registry as JSON", async () => {

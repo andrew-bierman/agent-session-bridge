@@ -76,8 +76,8 @@ Local checkout flow:
 git clone https://github.com/bohdanpodvirnyi/agent-session-bridge.git
 cd agent-session-bridge
 
-pnpm install
-pnpm build
+bun install
+bun run build
 node packages/cli/dist/cli/src/index.js setup
 node packages/cli/dist/cli/src/index.js doctor
 ```
@@ -169,16 +169,16 @@ This repo includes:
 Run the standard suite:
 
 ```bash
-pnpm test
-pnpm typecheck
-pnpm fixture:validate
-pnpm exec prettier --check .
+bun test
+bun check .
+bun run fixture:validate
+bun fmt --check
 ```
 
 Run the real-agent suite:
 
 ```bash
-pnpm test:real-agents
+bun test:real-agents
 ```
 
 ## Examples

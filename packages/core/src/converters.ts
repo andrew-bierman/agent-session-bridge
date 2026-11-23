@@ -210,9 +210,10 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "tool_result" &&
     typeof candidate.tool_use_id === "string"
   ) {
-    const output = typeof candidate.content === "string"
-      ? candidate.content
-      : serializeUnknownText(candidate.content);
+    const output =
+      typeof candidate.content === "string"
+        ? candidate.content
+        : serializeUnknownText(candidate.content);
     if (output === null) {
       return [];
     }
@@ -230,9 +231,10 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "function_call_output" &&
     typeof candidate.call_id === "string"
   ) {
-    const output = typeof candidate.output === "string"
-      ? candidate.output
-      : serializeUnknownText(candidate.output);
+    const output =
+      typeof candidate.output === "string"
+        ? candidate.output
+        : serializeUnknownText(candidate.output);
     if (output === null) {
       return [];
     }

@@ -20,7 +20,10 @@ const opt = (name: string, fallback: string) => {
 };
 
 const omnigentData = resolve(
-  opt("--omnigent-data", process.env.OMNIGENT_DATA_DIR ?? join(homedir(), ".omnigent")),
+  opt(
+    "--omnigent-data",
+    process.env.OMNIGENT_DATA_DIR ?? join(homedir(), ".omnigent"),
+  ),
 );
 const codexHome = resolve(opt("--codex-home", join(homedir(), ".codex")));
 const apply = flag("--apply");
@@ -57,7 +60,11 @@ async function sessionMeta(rolloutPath: string): Promise<SessionMeta | null> {
     try {
       const entry = JSON.parse(line);
       if (entry.type === "session_meta" && entry.payload?.id) {
-        return { id: entry.payload.id, cwd: entry.payload.cwd, timestamp: entry.payload.timestamp };
+        return {
+          id: entry.payload.id,
+          cwd: entry.payload.cwd,
+          timestamp: entry.payload.timestamp,
+        };
       }
     } catch {
       // ignore malformed line
@@ -68,11 +75,14 @@ async function sessionMeta(rolloutPath: string): Promise<SessionMeta | null> {
 
 const found: string[] = [];
 for await (const p of walk(omnigentData)) {
-  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes("codex-home")) found.push(p);
+  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes("codex-home"))
+    found.push(p);
 }
 
 if (apply) {
-  const dbs = (await readdir(codexHome)).filter((f) => /^state_\d+\.sqlite$/.test(f)).sort();
+  const dbs = (await readdir(codexHome))
+    .filter((f) => /^state_\d+\.sqlite$/.test(f))
+    .sort();
   const newest = dbs.at(-1);
   if (newest) {
     const backup = join(codexHome, `${newest}.bak-${Date.now()}`);
@@ -117,4 +127,6 @@ for (const src of found) {
   console.log(`  indexed: ${JSON.stringify(result)}`);
   copied++;
 }
-console.log(`${found.length} rollouts found, ${copied} synced, ${skipped} skipped${apply ? "" : " (dry run)"}`);
+console.log(
+  `${found.length} rollouts found, ${copied} synced, ${skipped} skipped${apply ? "" : " (dry run)"}`,
+);
