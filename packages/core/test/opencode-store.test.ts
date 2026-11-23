@@ -552,6 +552,51 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         expect(inspectSeed().messages.at(-1)?.text).toBe(
           "Turn on the original Codex session",
         );
+        appendFileSync(
+          source,
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "Batch sync reaches the second session",
+                },
+              ],
+            },
+          }) + "\n",
+        );
+        const runBatch = () =>
+          promisify(execFile)(
+            process.execPath,
+            [cli, "sync-opencode", "--all", path],
+            options,
+          ).then(
+            () => {
+              throw new Error(
+                "Expected batch status 1 for the conflicting session",
+              );
+            },
+            (error) => {
+              expect(error.code).toBe(1);
+              return error.stdout as string;
+            },
+          );
+        const batch = await runBatch();
+        expect(batch).toContain(
+          `OpenCode ${id}: rejected (OpenCode and Codex histories diverged)`,
+        );
+        expect(batch).toContain(`OpenCode ${seededId}: 1 messages appended`);
+        expect(batch).toContain("1 linked sessions processed, 1 rejected");
+        expect(await runBatch()).toContain(
+          `OpenCode ${seededId}: 0 messages appended`,
+        );
+        expect(inspectSeed().messages.at(-1)?.content).toEqual([
+          { type: "text", text: "Batch sync reaches the second session" },
+        ]);
         const beforeEdit = inspectSeed();
         const editedSource = readFileSync(source, "utf8").replace(
           "Fresh imported context",

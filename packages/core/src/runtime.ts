@@ -1461,6 +1461,8 @@ export async function seedLinkedSessionInOpenCode(params: {
     if (
       (linked?.mirrors.opencode &&
         linked.mirrors.opencode.nativeId !== bundle.info.id) ||
+      (linked?.mirrors.opencode?.openCodeDatabasePath &&
+        linked.mirrors.opencode.openCodeDatabasePath !== params.databasePath) ||
       (existing && existing.bridgeSessionId !== linked?.bridgeSessionId) ||
       (linked && linked.canonicalCwd !== cwd) ||
       (linked?.mirrors[tool]?.sessionPath &&
@@ -1494,6 +1496,7 @@ export async function seedLinkedSessionInOpenCode(params: {
     };
     conversation.mirrors.opencode = {
       seedTool: tool,
+      openCodeDatabasePath: params.databasePath,
       sessionPath: params.databasePath,
       nativeId: bundle.info.id,
       seededSourceOffset: bundle.messages.length,
@@ -1566,7 +1569,9 @@ async function returnLinkedTurnsUnderLock(params: {
   if (
     !source ||
     !target?.exportPrefix ||
-    (target.seedTool ?? "codex") !== params.tool
+    (target.seedTool ?? "codex") !== params.tool ||
+    (target.openCodeDatabasePath &&
+      target.openCodeDatabasePath !== (await realpath(params.databasePath)))
   ) {
     throw new Error("Expected a linked OpenCode session");
   }

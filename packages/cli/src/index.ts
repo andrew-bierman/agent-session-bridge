@@ -1664,15 +1664,17 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   if (command === "sync-opencode") {
-    const [id, database] = rest;
+    const all = hasFlag(restWithFlags, "--all");
+    const [id, second] = rest;
+    const database = all ? id : second;
     if (
-      !id ||
       !database ||
-      !/^ses_[a-zA-Z0-9]+$/.test(id) ||
+      (!all && (!id || !/^ses_[a-zA-Z0-9]+$/.test(id))) ||
+      rest.length !== (all ? 1 : 2) ||
       restWithFlags.length !== 2
     ) {
       throw new Error(
-        "Usage: sync-opencode <OpenCode session ID> <OpenCode database path>",
+        "Usage: sync-opencode <OpenCode session ID> <database>, or sync-opencode --all <database>",
       );
     }
     const databasePath = await fs.realpath(resolve(cwd, database));
@@ -1684,55 +1686,87 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       .replace(/^opencode v/, "");
     if (version !== "2.3.0" && version !== "2.3.2")
       throw new Error("Unsupported OpenCode version");
-    const directory = await fs.mkdtemp(
-      join(tmpdir(), "bridge-opencode-export-"),
-    );
-    try {
-      const sourcePath = join(directory, "session.json");
-      const exported = execFileSync(
-        "opencode",
-        ["session", "export", "--standalone", id],
-        {
-          cwd,
-          env: { ...process.env, OPENCODE_DB: databasePath },
-          encoding: "utf8",
-          timeout: 30000,
-          maxBuffer: 32 * 1024 * 1024,
-        },
-      );
-      await fs.writeFile(sourcePath, exported, { mode: 0o600 });
-      const source = await loadSourceSessionSnapshot("opencode", sourcePath);
-      if (source.sourceSessionId !== id)
-        throw new Error("OpenCode export session identity changed");
+    const sync = async (id: string) => {
       const linked = findConversationByNativeSession(registry, "opencode", id);
-      const tool = linked?.mirrors.opencode?.seedTool ?? "codex";
-      const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
-      const registryPath = resolveRegistryPath(homeDir);
-      const result = await syncSourceSessionToTargets({
-        sourceTool: "opencode",
-        sourcePath,
-        targetTools: [tool],
-        registryPath,
-        homeDir,
-      });
-      const write = result.writes[0]!;
-      const returned =
-        linked?.mirrors[tool] && write.appendedCount === 0
-          ? await returnLinkedTurnsToOpenCode({
-              registryPath,
-              tool,
-              sessionId: write.targetSessionId,
-              databasePath,
-              version,
-            })
-          : 0;
-      deps.stdout(
-        `${label} ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
+      const linkedDatabase = linked?.mirrors.opencode?.openCodeDatabasePath;
+      if (linkedDatabase && linkedDatabase !== databasePath)
+        throw new Error("OpenCode session is linked to a different database");
+      const directory = await fs.mkdtemp(
+        join(tmpdir(), "bridge-opencode-export-"),
       );
+      try {
+        const sourcePath = join(directory, "session.json");
+        const exported = execFileSync(
+          "opencode",
+          ["session", "export", "--standalone", id],
+          {
+            cwd,
+            env: { ...process.env, OPENCODE_DB: databasePath },
+            encoding: "utf8",
+            timeout: 30000,
+            maxBuffer: 32 * 1024 * 1024,
+          },
+        );
+        await fs.writeFile(sourcePath, exported, { mode: 0o600 });
+        const source = await loadSourceSessionSnapshot("opencode", sourcePath);
+        if (source.sourceSessionId !== id)
+          throw new Error("OpenCode export session identity changed");
+        const tool = linked?.mirrors.opencode?.seedTool ?? "codex";
+        const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
+        const registryPath = resolveRegistryPath(homeDir);
+        const result = await syncSourceSessionToTargets({
+          sourceTool: "opencode",
+          sourcePath,
+          targetTools: [tool],
+          registryPath,
+          homeDir,
+        });
+        const write = result.writes[0]!;
+        const returned =
+          linked?.mirrors[tool] && write.appendedCount === 0
+            ? await returnLinkedTurnsToOpenCode({
+                registryPath,
+                tool,
+                sessionId: write.targetSessionId,
+                databasePath,
+                version,
+              })
+            : 0;
+        deps.stdout(
+          `${label} ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
+        );
+      } finally {
+        await fs.rm(directory, { force: true, recursive: true });
+      }
+    };
+    if (!all) {
+      await sync(id!);
       return 0;
-    } finally {
-      await fs.rm(directory, { force: true, recursive: true });
     }
+    let processed = 0;
+    let rejected = 0;
+    for (const conversation of registry.conversations) {
+      const mirror = conversation.mirrors.opencode;
+      if (
+        conversation.status !== "active" ||
+        !mirror?.exportPrefix ||
+        !conversation.mirrors[mirror.seedTool ?? "codex"] ||
+        (mirror.openCodeDatabasePath &&
+          mirror.openCodeDatabasePath !== databasePath)
+      )
+        continue;
+      try {
+        await sync(mirror.nativeId);
+        processed += 1;
+      } catch (error) {
+        rejected += 1;
+        deps.stdout(
+          `OpenCode ${mirror.nativeId}: rejected (${(error as Error).message})`,
+        );
+      }
+    }
+    deps.stdout(`${processed} linked sessions processed, ${rejected} rejected`);
+    return rejected ? 1 : 0;
   }
 
   if (command === "return-to-opencode") {

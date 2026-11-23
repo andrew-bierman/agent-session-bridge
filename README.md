@@ -245,6 +245,15 @@ directions on a disposable or backed-up store. Stop both clients before sync:
 agent-session-bridge sync-opencode OPENCODE_SESSION_ID /path/to/opencode.db
 ```
 
+To make one pass over the active linked sessions, run:
+
+```sh
+agent-session-bridge sync-opencode --all /path/to/opencode.db
+```
+
+A conflict is reported per session. The pass continues with the other
+links and exits with status 1 if any link is rejected.
+
 The command creates or updates the Codex mirror when OpenCode is ahead, or
 returns pending Codex text turns when OpenCode is unchanged. If both sides
 have new turns, it refuses the sync and leaves both histories intact.

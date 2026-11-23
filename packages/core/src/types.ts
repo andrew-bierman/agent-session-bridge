@@ -16,6 +16,7 @@ export interface ToolMirror {
   sessionPath: string;
   nativeId: string;
   seededSourceOffset?: number;
+  openCodeDatabasePath?: string;
   seedTool?: Exclude<ToolName, "opencode">;
   seedPrefix?: { offset: number; digest: string };
   exportPrefix?: {
