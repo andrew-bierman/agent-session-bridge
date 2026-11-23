@@ -279,7 +279,8 @@ import by exporting the native session. An identical retry reuses the same
 ID. Changed source history is rejected if the mirror already exists. Seeding
 links the original Codex, Claude Code, or Pi transcript by its native ID.
 It preserves settled tool calls and results as historical text. Unsettled
-calls, attachments, and reasoning blocks detected in the source are rejected.
+calls and attachments detected in the source are rejected. Reasoning and
+empty messages are marked in the imported transcript without copying reasoning text.
 Run `sync-opencode` with the ID printed by the seed command to exchange new
 text turns and settled tool history with that transcript. A changed seed prefix or independent turns
 on both sides stop sync.

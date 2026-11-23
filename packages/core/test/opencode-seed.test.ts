@@ -121,6 +121,43 @@ it.each(fixtures)(
   },
 );
 
+it("retains Pi text and marks reasoning and empty records without copying private reasoning", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-seed-reasoning-"));
+  const path = textTranscript("pi", "pi-session.jsonl");
+  const records = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  records[2].message.content.unshift({
+    type: "thinking",
+    thinking: "private reasoning sentinel",
+  });
+  records.push({
+    type: "message",
+    id: "empty333",
+    parentId: records[2].id,
+    timestamp: "2026-04-05T10:00:03.000Z",
+    message: { role: "assistant", content: [] },
+  });
+  writeFileSync(
+    path,
+    records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+  const bundle = await createOpenCodeSeed("pi", path, root);
+  expect(JSON.stringify(bundle)).not.toContain("private reasoning sentinel");
+  expect(
+    bundle.messages
+      .slice(1)
+      .map((message) => message.type === "assistant" && message.content),
+  ).toEqual([
+    [
+      { type: "text", text: "[Source reasoning omitted]" },
+      { type: "text", text: "Looking." },
+    ],
+    [{ type: "text", text: "[Empty source message]" }],
+  ]);
+});
+
 it("preserves standalone Codex tool records with JSON arguments and raw custom input", async () => {
   root = mkdtempSync(join(tmpdir(), "bridge-standalone-calls-"));
   const path = join(root, "standalone.jsonl");

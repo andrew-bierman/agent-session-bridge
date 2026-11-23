@@ -1284,6 +1284,8 @@ function renderOpenCodeHistory(
   const messages = chunks.map(({ message, sourceOffset }) => {
     const content = message.content.map((block) => {
       if (block.type === "text") return block;
+      if (block.type === "thinking")
+        return { type: "text" as const, text: "[Source reasoning omitted]" };
       if (block.type === "tool_call") {
         if (pendingCalls.has(block.id))
           throw new Error("Duplicate tool call in OpenCode transcript");
@@ -1305,7 +1307,7 @@ function renderOpenCodeHistory(
       };
     });
     if (!content.length)
-      throw new Error("Empty message in OpenCode transcript");
+      content.push({ type: "text", text: "[Empty source message]" });
     const id = idForOffset(sourceOffset);
     const created = Date.parse(message.timestamp);
     if (!Number.isFinite(created))
