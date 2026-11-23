@@ -221,6 +221,7 @@ without generating individual export files:
 agent-session-bridge import-opencode --database /path/to/copy.db --dry-run
 ```
 
+Add one or more OpenCode session IDs to preview or import a selected batch.
 Remove `--dry-run` to write native mirrors. The OpenCode database is opened
 read-only. Sessions with no importable messages are reported individually.
 New mirrors in another harness receive the original conversation when

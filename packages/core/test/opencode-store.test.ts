@@ -726,6 +726,23 @@ describe.runIf(process.env.TEST_OPENCODE === "1")(
         );
         expect(preview).toContain("2 validated, 0 rejected");
         expect(preview).toContain(`OpenCode ${seededId}:`);
+        const canary = (...flags: string[]) =>
+          execFileSync(
+            process.execPath,
+            [cli, "import-opencode", "--database", path, seededId, ...flags],
+            options,
+          );
+        const selectedPreview = canary("--dry-run");
+        expect(selectedPreview).toContain("1 validated, 0 rejected");
+        expect(selectedPreview).not.toContain(`OpenCode ${id}:`);
+        const canaryResult = canary();
+        expect(canaryResult).toContain("1 processed, 0 rejected");
+        expect(canaryResult).toMatch(/pi: .* \([1-9]\d* records appended\)/);
+        expect(canaryResult).toMatch(
+          /claude: .* \([1-9]\d* records appended\)/,
+        );
+        expect(canary()).not.toMatch(/\([1-9]\d* records appended\)/);
+
         const beforeEdit = inspectSeed();
         const editedSource = readFileSync(source, "utf8").replace(
           "Fresh imported context",

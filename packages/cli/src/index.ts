@@ -1850,7 +1850,9 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     const database = readOption(restWithFlags, "--database");
     if (
       (fromDatabase
-        ? !database || database.startsWith("--") || rest.length !== 0
+        ? !database ||
+          database.startsWith("--") ||
+          rest.some((id) => !/^ses_[a-zA-Z0-9]+$/.test(id))
         : rest.length === 0) ||
       (hasFlag(restWithFlags, "--target-cwd") &&
         (!targetCwd || targetCwd.startsWith("--"))) ||
@@ -1860,7 +1862,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         tool !== "codex")
     ) {
       throw new Error(
-        "Usage: import-opencode <OpenCode v2 export.json>... or --database <OpenCode database> [--dry-run] [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
+        "Usage: import-opencode <OpenCode v2 export.json>... or --database <OpenCode database> [session ID ...] [--dry-run] [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
       );
     }
     let successful = 0;
@@ -1878,9 +1880,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       })
         .trim()
         .replace(/^opencode v/, "");
-      const { listOpenCodeSessionIds } =
-        await import("../../core/src/opencode-store.js");
-      sources = listOpenCodeSessionIds(databasePath, version);
+      if (rest.length === 0) {
+        const { listOpenCodeSessionIds } =
+          await import("../../core/src/opencode-store.js");
+        sources = listOpenCodeSessionIds(databasePath, version);
+      }
     }
     for (const [index, source] of sources.entries()) {
       const sourcePath = databasePath ?? resolve(cwd, source);
