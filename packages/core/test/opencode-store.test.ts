@@ -26,6 +26,71 @@ import {
   type OpenCodeMessageRow,
 } from "../src/opencode-store.js";
 
+it("keeps settled tool inputs and results as historical text in the Codex mirror", async () => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-tool-history-"));
+  try {
+    const sourcePath = join(root, "opencode.json");
+    const now = Date.now();
+    const tool = {
+      type: "tool",
+      id: "test-call",
+      name: "read",
+      state: {
+        status: "completed",
+        input: { path: "example.txt" },
+        content: [{ type: "text", text: "historical tool result" }],
+      },
+    };
+    const bundle = {
+      info: {
+        id: "ses_tool_history",
+        location: { directory: root },
+        time: { created: now },
+      },
+      messages: [
+        {
+          id: "msg_user",
+          type: "user",
+          text: "Read the example",
+          time: { created: now },
+        },
+        { id: "msg_model", type: "model-switched", time: { created: now } },
+        {
+          id: "msg_assistant",
+          type: "assistant",
+          time: { created: now },
+          content: [
+            { type: "reasoning", text: "provider reasoning marker" },
+            tool,
+          ],
+        },
+      ],
+    };
+    const sync = () =>
+      syncSourceSessionToTargets({
+        sourceTool: "opencode",
+        sourcePath,
+        homeDir: root,
+        registryPath: join(root, "registry.json"),
+        targetTools: ["codex"],
+      });
+    writeFileSync(sourcePath, JSON.stringify(bundle));
+    const result = await sync();
+    const rollout = readFileSync(result.writes[0]!.sessionPath, "utf8");
+    expect(rollout).toContain("example.txt");
+    expect(rollout).toContain("historical tool result");
+    expect(rollout).not.toContain("provider reasoning marker");
+    expect(rollout).not.toContain("function_call");
+    expect((await sync()).writes[0]?.appendedCount).toBe(0);
+    tool.state.status = "running";
+    writeFileSync(sourcePath, JSON.stringify(bundle));
+    await expect(sync()).rejects.toThrow("OpenCode tool call is unsettled");
+    expect(readFileSync(result.writes[0]!.sessionPath, "utf8")).toBe(rollout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 describe.runIf(process.env.TEST_OPENCODE === "1")(
   "OpenCode native store",
   () => {

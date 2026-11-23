@@ -198,7 +198,7 @@ The demo loop in [examples/flows/three-agent-loop.md](./examples/flows/three-age
 - Some legacy Codex imports can still emit orphan-output warnings during resume.
 - Public API and config shape may still evolve as the project hardens.
 
-### Import an OpenCode text session
+### Import an OpenCode session
 
 Export a session with OpenCode v2, then import it into a Bridge-managed mirror:
 
@@ -208,10 +208,11 @@ agent-session-bridge import-opencode session.json --tool codex
 ```
 
 Use a fresh export of the same session to pick up new text messages. Identical
-exports do not duplicate messages. Shortened or edited exports are rejected,
-as are non-text messages such as tool calls and attachments. This command only
-imports from OpenCode. It does not enable automatic sync or write to the
-OpenCode store.
+exports do not duplicate messages. Settled tool calls with text results are
+carried as historical text, so the receiving client can read them without
+replaying them as tool calls. Provider reasoning is omitted. Shortened or
+edited exports, attachments, and unsettled calls are rejected. This command
+imports from OpenCode without writing to its store.
 
 To rehearse the return path on a disposable OpenCode 2.3.0 or 2.3.2
 database, finish a text turn in the linked Codex mirror and stop both

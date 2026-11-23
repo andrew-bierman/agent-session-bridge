@@ -581,9 +581,60 @@ async function loadTargetCodexState(path: string): Promise<{
   };
 }
 
+// shortcut: carry tool history as inert transcript text until every target can replay native tool pairs safely.
+function openCodeHistoryBlock(block: any): { type: "text"; text: string }[] {
+  if (block?.type === "text" && typeof block.text === "string") return [block];
+  if (block?.type === "reasoning") return [];
+  const state = block?.state;
+  if (
+    block?.type !== "tool" ||
+    typeof block.name !== "string" ||
+    typeof block.id !== "string" ||
+    !state ||
+    typeof state.input !== "object" ||
+    !state.input ||
+    Array.isArray(state.input)
+  ) {
+    throw new Error("Unsupported OpenCode assistant content");
+  }
+  if (
+    state.status === "completed" &&
+    (!Array.isArray(state.content) ||
+      state.content.some(
+        (part: any) => part?.type !== "text" || typeof part.text !== "string",
+      ))
+  ) {
+    throw new Error("Unsupported OpenCode tool result");
+  }
+  if (state.status !== "completed" && state.status !== "error") {
+    throw new Error("OpenCode tool call is unsettled");
+  }
+  return [
+    {
+      type: "text",
+      text:
+        "Historical OpenCode tool record (already settled): " +
+        JSON.stringify({
+          id: block.id,
+          name: block.name,
+          input: state.input,
+          status: state.status,
+          ...(state.status === "completed"
+            ? { output: state.content.map((part: any) => part.text) }
+            : { error: state.error }),
+        }),
+    },
+  ];
+}
+
 function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
   return messages.flatMap((entry, index) => {
-    if (entry?.type === "agent-switched" || entry?.type === "idle") return [];
+    if (
+      entry?.type === "agent-switched" ||
+      entry?.type === "idle" ||
+      entry?.type === "model-switched"
+    )
+      return [];
     const blocks =
       entry?.type === "user" && !entry.files?.length
         ? [{ type: "text", text: entry.text }]
@@ -594,14 +645,19 @@ function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
       entry?.error ||
       typeof entry?.id !== "string" ||
       !Number.isFinite(entry?.time?.created) ||
-      !Array.isArray(blocks) ||
-      !blocks.length ||
-      blocks.some(
-        (block) => block?.type !== "text" || typeof block.text !== "string",
-      )
+      !Array.isArray(blocks)
     ) {
       throw new Error(`Unsupported OpenCode message at index ${index}`);
     }
+    const content =
+      entry.type === "assistant"
+        ? blocks.flatMap(openCodeHistoryBlock)
+        : blocks.map((block) => {
+            if (typeof block.text !== "string")
+              throw new Error("Invalid OpenCode user text");
+            return block;
+          });
+    if (!content.length) return [];
     return [
       {
         sourceOffset: index + 1,
@@ -609,7 +665,7 @@ function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
           id: entry.id,
           role: entry.type,
           timestamp: new Date(entry.time.created).toISOString(),
-          content: blocks,
+          content,
         },
       },
     ];
