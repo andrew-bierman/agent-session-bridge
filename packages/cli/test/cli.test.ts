@@ -798,6 +798,56 @@ CREATE TABLE threads (
     expect((await readClaudeCodeSession(importedPath)).length).toBe(3);
   });
 
+  it("previews OpenCode exports without writes and retries a mixed batch without duplicates", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const valid = join(projectDir, "valid.json");
+    const invalid = join(projectDir, "invalid.json");
+    const lines: string[] = [];
+    const bundle = {
+      info: {
+        id: "ses_batch",
+        location: { directory: projectDir },
+        time: { created: 1 },
+      },
+      messages: [
+        {
+          type: "user",
+          id: "msg_batch",
+          time: { created: 1 },
+          text: "Batch fixture",
+        },
+      ],
+    };
+    await writeFile(valid, JSON.stringify(bundle));
+    await writeFile(
+      invalid,
+      JSON.stringify({ ...bundle, messages: [{ type: "shell" }] }),
+    );
+    const run = (...flags: string[]) =>
+      runCli(["import-opencode", valid, invalid, "--tool", "codex", ...flags], {
+        cwd: projectDir,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {},
+        stdout: (line) => lines.push(line),
+      });
+    expect(await run("--dry-run")).toBe(1);
+    expect(lines.join("\n")).toContain("1 validated, 1 rejected");
+    await expect(access(registryPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(access(join(homeDir, ".codex"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await run()).toBe(1);
+    expect(
+      (await loadRegistry(registryPath, { readFile })).conversations,
+    ).toHaveLength(1);
+    lines.length = 0;
+    expect(await run()).toBe(1);
+    expect(lines.join("\n")).toContain("0 records appended");
+  });
+
   it("supports bulk import mode", async () => {
     const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
     const piSessionPath = join(

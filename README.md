@@ -208,6 +208,12 @@ opencode session export --standalone SESSION_ID > session.json
 agent-session-bridge import-opencode session.json --tool codex
 ```
 
+Pass multiple JSON files to import a batch. Add `--dry-run` to check
+transcript content and project directories without writing session files.
+Files are processed in argument order. The command reports a rejection by
+argument number, continues through the batch, and returns a nonzero status if
+any file was rejected. A preview does not check destination conflicts.
+
 Use a fresh export of the same session to pick up new text messages. Identical
 exports do not duplicate messages. Settled tool calls with text results are
 carried as historical text, so the receiving client can read them without

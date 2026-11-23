@@ -1602,13 +1602,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   if (command === "import-opencode") {
-    const [source] = rest;
     const targetCwd = readOption(restWithFlags, "--target-cwd");
     const tool = readOption(restWithFlags, "--tool");
     if (
-      !source ||
-      rest.length !== 1 ||
-      dryRun ||
+      rest.length === 0 ||
       (hasFlag(restWithFlags, "--target-cwd") &&
         (!targetCwd || targetCwd.startsWith("--"))) ||
       (hasFlag(restWithFlags, "--tool") &&
@@ -1617,23 +1614,66 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         tool !== "codex")
     ) {
       throw new Error(
-        "Usage: import-opencode <OpenCode v2 export.json> [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
+        "Usage: import-opencode <OpenCode v2 export.json>... [--dry-run] [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
       );
     }
-    const result = await syncSourceSessionToTargets({
-      sourceTool: "opencode",
-      sourcePath: resolve(cwd, source),
-      targetTools,
-      targetCwd: targetCwd ? resolve(cwd, targetCwd) : undefined,
-      registryPath: resolveRegistryPath(homeDir),
-      homeDir,
-    });
-    for (const write of result.writes) {
-      deps.stdout(
-        `${write.targetTool}: ${write.targetSessionId} (${write.appendedCount} records appended)`,
-      );
+    let successful = 0;
+    let rejected = 0;
+    const destination = targetCwd ? resolve(cwd, targetCwd) : undefined;
+    for (const [index, source] of rest.entries()) {
+      const sourcePath = resolve(cwd, source);
+      try {
+        if (dryRun) {
+          const snapshot = await loadSourceSessionSnapshot(
+            "opencode",
+            sourcePath,
+          );
+          const linked = findConversationByNativeSession(
+            registry,
+            "opencode",
+            snapshot.sourceSessionId,
+          );
+          if (
+            !(
+              await fs.stat(destination ?? linked?.canonicalCwd ?? snapshot.cwd)
+            ).isDirectory()
+          ) {
+            throw new Error("Project path is not a directory");
+          }
+          deps.stdout(
+            `export ${index + 1}: ${snapshot.chunks.length} supported messages; no writes`,
+          );
+        } else {
+          const result = await syncSourceSessionToTargets({
+            sourceTool: "opencode",
+            sourcePath,
+            targetTools,
+            targetCwd: destination,
+            registryPath: resolveRegistryPath(homeDir),
+            homeDir,
+          });
+          for (const write of result.writes) {
+            deps.stdout(
+              `${write.targetTool}: ${write.targetSessionId} (${write.appendedCount} records appended)`,
+            );
+          }
+        }
+        successful++;
+      } catch (error) {
+        rejected++;
+        const reason =
+          error instanceof SyntaxError
+            ? "Malformed JSON"
+            : error instanceof Error
+              ? error.message
+              : "Unknown import error";
+        deps.stdout(`export ${index + 1} rejected: ${reason}`);
+      }
     }
-    return 0;
+    deps.stdout(
+      `${successful} ${dryRun ? "validated" : "processed"}, ${rejected} rejected`,
+    );
+    return rejected ? 1 : 0;
   }
 
   if (command === "import") {
