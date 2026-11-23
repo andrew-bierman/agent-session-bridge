@@ -1623,6 +1623,12 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     for (const [index, source] of rest.entries()) {
       const sourcePath = resolve(cwd, source);
       try {
+        const reportOmissions = (count: number | undefined) => {
+          if (count)
+            deps.stdout(
+              `export ${index + 1}: ${count} system record${count === 1 ? "" : "s"} omitted`,
+            );
+        };
         if (dryRun) {
           const snapshot = await loadSourceSessionSnapshot(
             "opencode",
@@ -1640,6 +1646,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
           ) {
             throw new Error("Project path is not a directory");
           }
+          reportOmissions(snapshot.omittedSystemRecords);
           deps.stdout(
             `export ${index + 1}: ${snapshot.chunks.length} supported messages; no writes`,
           );
@@ -1652,6 +1659,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
             registryPath: resolveRegistryPath(homeDir),
             homeDir,
           });
+          reportOmissions(result.snapshot.omittedSystemRecords);
           for (const write of result.writes) {
             deps.stdout(
               `${write.targetTool}: ${write.targetSessionId} (${write.appendedCount} records appended)`,

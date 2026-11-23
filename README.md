@@ -217,7 +217,9 @@ any file was rejected. A preview does not check destination conflicts.
 Use a fresh export of the same session to pick up new text messages. Identical
 exports do not duplicate messages. Settled tool calls with text results are
 carried as historical text, so the receiving client can read them without
-replaying them as tool calls. Provider reasoning is omitted. Shortened or
+replaying them as tool calls. Synthetic records and completed compaction
+summaries are carried as labeled historical text. OpenCode system records
+are omitted and counted in the report. Provider reasoning is omitted. Shortened or
 edited exports, attachments, and unsettled calls are rejected. This command
 imports from OpenCode without writing to its store. For a session whose
 original project is gone, pass `--target-cwd /path/to/existing/project` to

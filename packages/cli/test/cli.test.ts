@@ -816,6 +816,25 @@ CREATE TABLE threads (
           time: { created: 1 },
           text: "Batch fixture",
         },
+        {
+          type: "system",
+          id: "msg_system",
+          time: { created: 2 },
+          text: "SYSTEM_SENTINEL",
+        },
+        {
+          type: "synthetic",
+          id: "msg_synthetic",
+          time: { created: 3 },
+          text: "Synthetic history sentinel",
+        },
+        {
+          type: "compaction",
+          id: "msg_compaction",
+          time: { created: 4 },
+          status: "completed",
+          summary: "Compaction history sentinel",
+        },
       ],
     };
     await writeFile(valid, JSON.stringify(bundle));
@@ -833,6 +852,7 @@ CREATE TABLE threads (
       });
     expect(await run("--dry-run")).toBe(1);
     expect(lines.join("\n")).toContain("1 validated, 1 rejected");
+    expect(lines.join("\n")).toContain("1 system record omitted");
     await expect(access(registryPath)).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -843,6 +863,14 @@ CREATE TABLE threads (
     expect(
       (await loadRegistry(registryPath, { readFile })).conversations,
     ).toHaveLength(1);
+    const registry = await loadRegistry(registryPath, { readFile });
+    const rollout = await readFile(
+      registry.conversations[0]!.mirrors.codex!.sessionPath,
+      "utf8",
+    );
+    expect(rollout).toContain("Synthetic history sentinel");
+    expect(rollout).toContain("Compaction history sentinel");
+    expect(rollout).not.toContain("SYSTEM_SENTINEL");
     lines.length = 0;
     expect(await run()).toBe(1);
     expect(lines.join("\n")).toContain("0 records appended");

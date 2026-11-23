@@ -72,6 +72,7 @@ export interface SourceSessionSnapshot {
   updatedAt: string;
   chunks: SourceMessageChunk[];
   rawMessageCount?: number;
+  omittedSystemRecords?: number;
 }
 
 export interface SyncWriteResult {
@@ -632,15 +633,27 @@ function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
     if (
       entry?.type === "agent-switched" ||
       entry?.type === "idle" ||
-      entry?.type === "model-switched"
+      entry?.type === "model-switched" ||
+      entry?.type === "system"
     )
       return [];
+    const historical =
+      entry?.type === "synthetic" && typeof entry.text === "string"
+        ? "Historical OpenCode synthetic record: " + JSON.stringify(entry.text)
+        : entry?.type === "compaction" &&
+            entry.status === "completed" &&
+            typeof entry.summary === "string"
+          ? "Historical OpenCode compaction summary: " +
+            JSON.stringify(entry.summary)
+          : undefined;
     const blocks =
-      entry?.type === "user" && !entry.files?.length
-        ? [{ type: "text", text: entry.text }]
-        : entry?.type === "assistant"
-          ? entry.content
-          : null;
+      historical !== undefined
+        ? [{ type: "text", text: historical }]
+        : entry?.type === "user" && !entry.files?.length
+          ? [{ type: "text", text: entry.text }]
+          : entry?.type === "assistant"
+            ? entry.content
+            : null;
     if (
       entry?.error ||
       typeof entry?.id !== "string" ||
@@ -663,7 +676,7 @@ function normalizeOpenCodeMessages(messages: any[]): SourceMessageChunk[] {
         sourceOffset: index + 1,
         message: {
           id: entry.id,
-          role: entry.type,
+          role: historical !== undefined ? "assistant" : entry.type,
           timestamp: new Date(entry.time.created).toISOString(),
           content,
         },
@@ -699,6 +712,9 @@ export async function loadSourceSessionSnapshot(
       sourcePath,
       sourceSessionId: id,
       rawMessageCount: messages.length,
+      omittedSystemRecords: messages.filter(
+        (message) => message?.type === "system",
+      ).length,
       cwd,
       updatedAt: new Date(
         info.time?.updated ?? info.time?.created,
