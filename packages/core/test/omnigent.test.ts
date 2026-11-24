@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -129,5 +135,81 @@ describe("omnigent locator", () => {
     writeFileSync(join(dataDir, "chat.db"), "not a database");
     const sessions = await listOmnigentCodexSessions(dataDir);
     expect(sessions.map((s) => s.threadId)).toEqual(["thread-lone"]);
+  });
+
+  it("lists several rollouts from one bridge (resumed session), newest first", async () => {
+    rollout(LONE, "thread-a");
+    const dir = join(
+      dataDir,
+      "codex-native",
+      omnigentBridgeHash(LONE),
+      "codex-home",
+      "sessions",
+      "2026",
+      "11",
+      "24",
+    );
+    mkdirSync(dir, { recursive: true });
+    const later = join(dir, "rollout-2026-11-24T01-00-00-thread-b.jsonl");
+    writeFileSync(
+      later,
+      `${JSON.stringify({ type: "session_meta", payload: { id: "thread-b", cwd: "/w", timestamp: "2026-11-24T01:00:00.000Z" } })}\n`,
+    );
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(later, future, future);
+    const sessions = await listOmnigentCodexSessions(dataDir);
+    expect(sessions.map((s) => s.threadId)).toEqual(["thread-b", "thread-a"]);
+    expect(sessions[0]?.startedAt).toBe("2026-11-24T01:00:00.000Z");
+  });
+
+  it("keeps a grandchild chain linked to its direct parent and the root", async () => {
+    const GRAND = "0123456789abcdef0123456789abcdef";
+    rollout(PARENT, "thread-parent");
+    rollout(CHILD, "thread-child");
+    rollout(GRAND, "thread-grand");
+    execFileSync("sqlite3", [
+      join(dataDir, "chat.db"),
+      `CREATE TABLE conversations (id BLOB NOT NULL, title TEXT, parent_conversation_id BLOB, root_conversation_id BLOB NOT NULL, workspace_id INTEGER NOT NULL DEFAULT 0, archived BOOLEAN DEFAULT 0, extra TEXT);
+       CREATE TABLE omnigent_conversation_metadata (workspace_id INTEGER NOT NULL DEFAULT 0, id BLOB NOT NULL, kind INTEGER NOT NULL DEFAULT 1, sub_agent_name TEXT, other BLOB);
+       INSERT INTO conversations VALUES (x'${PARENT}', 'P', NULL, x'${PARENT}', 0, 0, 'z');
+       INSERT INTO conversations VALUES (x'${CHILD}', 'C', x'${PARENT}', x'${PARENT}', 0, 1, 'z');
+       INSERT INTO conversations VALUES (x'${GRAND}', 'G', x'${CHILD}', x'${PARENT}', 0, 0, 'z');
+       INSERT INTO omnigent_conversation_metadata VALUES (0, x'${PARENT}', 1, NULL, NULL);
+       INSERT INTO omnigent_conversation_metadata VALUES (0, x'${CHILD}', 2, 'planner', NULL);
+       INSERT INTO omnigent_conversation_metadata VALUES (0, x'${GRAND}', 2, 'coder', NULL);`,
+    ]);
+    const byThread = new Map(
+      (await listOmnigentCodexSessions(dataDir)).map((s) => [s.threadId, s]),
+    );
+    expect(byThread.get("thread-grand")).toMatchObject({
+      kind: "sub_agent",
+      subAgentName: "coder",
+      parentConversationId: CHILD,
+      rootConversationId: PARENT,
+    });
+    // Extra chat.db columns and archived conversations do not break linking.
+    expect(byThread.get("thread-child")?.subAgentName).toBe("planner");
+  });
+
+  it("treats a conversation with no metadata row as a default session", async () => {
+    rollout(LONE, "thread-lone");
+    execFileSync("sqlite3", [
+      join(dataDir, "chat.db"),
+      `CREATE TABLE conversations (id BLOB NOT NULL, title TEXT, parent_conversation_id BLOB, root_conversation_id BLOB NOT NULL, workspace_id INTEGER NOT NULL DEFAULT 0);
+       CREATE TABLE omnigent_conversation_metadata (workspace_id INTEGER NOT NULL DEFAULT 0, id BLOB NOT NULL, kind INTEGER, sub_agent_name TEXT);
+       INSERT INTO conversations VALUES (x'${LONE}', 'T', NULL, x'${LONE}', 0);`,
+    ]);
+    const [session] = await listOmnigentCodexSessions(dataDir);
+    expect(session?.kind).toBe("default");
+    expect(session?.subAgentName).toBeUndefined();
+    expect(session?.title).toBe("T");
+  });
+
+  it("does not follow unrelated bridge dirs that have no sessions", async () => {
+    mkdirSync(join(dataDir, "codex-native", "process-owners"), {
+      recursive: true,
+    });
+    writeFileSync(join(dataDir, "codex-native", "process-registry.json"), "{}");
+    expect(await listOmnigentCodexSessions(dataDir)).toEqual([]);
   });
 });
