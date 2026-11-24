@@ -1,4 +1,12 @@
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { convertNormalizedToClaudeLine } from "./converters.js";
@@ -43,6 +51,22 @@ export function codexRolloutPath(
     String(started.getUTCDate()).padStart(2, "0"),
     `rollout-${stamp}-${sessionId}.jsonl`,
   );
+}
+
+/**
+ * Write a file so a crash or a full disk never leaves a truncated copy under
+ * its final name: write beside it, then rename into place. A truncated file
+ * under the final name would be treated as already exported forever.
+ */
+async function writeFileAtomic(path: string, text: string): Promise<void> {
+  const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(temp, text);
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
 }
 
 export async function pathExists(path: string): Promise<boolean> {
@@ -99,7 +123,16 @@ export async function exportCodexSession(
     first.timestamp,
   );
   if (await pathExists(rolloutPath)) {
-    return { status: "exists", rolloutPath };
+    // An earlier run may have written the rollout but not indexed it (Codex had
+    // no thread database yet, or the run was interrupted). Indexing is an
+    // idempotent upsert, so make sure it is done.
+    const indexed = await backfillCodexThreadIndex({
+      homeDir: params.homeDir,
+      threadId: params.sessionId,
+      rolloutPath,
+      cwd: params.cwd,
+    });
+    return { status: "exists", rolloutPath, indexed };
   }
 
   const items = convertConversationToCodexRollout(
@@ -108,7 +141,7 @@ export async function exportCodexSession(
     params.sessionId,
   );
   await mkdir(join(rolloutPath, ".."), { recursive: true });
-  await writeFile(
+  await writeFileAtomic(
     rolloutPath,
     `${items
       .map((item) => JSON.stringify({ timestamp: first.timestamp, ...item }))
@@ -163,6 +196,6 @@ export async function exportClaudeSession(
     return JSON.stringify(line);
   });
   await mkdir(dirname(sessionPath), { recursive: true });
-  await writeFile(sessionPath, `${lines.join("\n")}\n`);
+  await writeFileAtomic(sessionPath, `${lines.join("\n")}\n`);
   return { status: "exported", sessionPath };
 }
