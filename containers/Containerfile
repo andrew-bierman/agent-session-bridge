@@ -41,7 +41,7 @@ RUN base="https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION
     && chmod +x /usr/local/bin/claude
 
 # Optional harnesses: a failed install records a skip reason instead of failing
-# the build, so only that tool's tests skip (read by containers/tests/support/skips.ts).
+# the build, so only that tool's tests skip (read by containers/tests/support/in-container.ts).
 RUN mkdir -p /opt/asb/skips
 RUN set -x; \
     ( curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \

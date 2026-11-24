@@ -17,6 +17,7 @@ import {
   runCodex,
   threadRows,
   type CodexSandbox,
+  warmCodexSandbox,
 } from "./support/codex.js";
 import { FINAL, PROMPT } from "./support/conversation.js";
 import { locateHistory } from "./support/history.js";
@@ -38,18 +39,6 @@ let mock: ScriptedMock;
 let omni: OmnigentSandbox;
 let conversation: OmnigentConversationInfo;
 let session: OmnigentSession;
-
-/** A Codex whose thread database exists, as a real user's does. */
-async function warmCodex(label: string): Promise<CodexSandbox> {
-  const sandbox = createCodexSandbox(mock.openaiBaseUrl);
-  mock.script([
-    { match: { userMessage: label }, response: { content: `${label} ok` } },
-  ]);
-  expect((await runCodex(sandbox, execArgs(sandbox.project, label))).code).toBe(
-    0,
-  );
-  return sandbox;
-}
 
 describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
   beforeAll(async () => {
@@ -127,7 +116,7 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
   });
 
   it("dry run lists the session and changes nothing", async () => {
-    const target = await warmCodex("warm-up bridge dry");
+    const target = await warmCodexSandbox(mock, "warm-up bridge dry");
     const before = threadRows(target.codexHome).length;
     const result = await runCodexSync(omni, ["--codex-home", target.codexHome]);
     expect(result.code).toBe(0);
@@ -137,7 +126,7 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
   }, 240_000);
 
   it("--apply copies the rollout, indexes it, and Codex resumes it with its history", async () => {
-    const target = await warmCodex("warm-up bridge apply");
+    const target = await warmCodexSandbox(mock, "warm-up bridge apply");
     const applied = await runCodexSync(omni, [
       "--codex-home",
       target.codexHome,
@@ -203,7 +192,7 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
   }, 300_000);
 
   it("--sub-agents-only finds none for a plain native session", async () => {
-    const target = await warmCodex("warm-up bridge subs");
+    const target = await warmCodexSandbox(mock, "warm-up bridge subs");
     const result = await runCodexSync(omni, [
       "--codex-home",
       target.codexHome,

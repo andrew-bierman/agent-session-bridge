@@ -25,6 +25,7 @@ import {
   runCodex,
   threadRows,
   type CodexSandbox,
+  warmCodexSandbox,
 } from "./support/codex.js";
 import { textOf, type HistoryMessage } from "./support/history.js";
 import { describeInContainer, saveArtifacts } from "./support/in-container.js";
@@ -48,18 +49,6 @@ let mock: ScriptedMock;
 let omni: OmnigentSandbox;
 let parent: OmnigentConversationInfo;
 let child: OmnigentConversationInfo;
-
-/** A Codex whose thread database exists, as a real user's does. */
-async function warmCodex(label: string): Promise<CodexSandbox> {
-  const sandbox = createCodexSandbox(mock.openaiBaseUrl);
-  mock.script([
-    { match: { userMessage: label }, response: { content: `${label} ok` } },
-  ]);
-  expect((await runCodex(sandbox, execArgs(sandbox.project, label))).code).toBe(
-    0,
-  );
-  return sandbox;
-}
 
 const index = (
   history: HistoryMessage[],
@@ -213,7 +202,7 @@ describeInContainer(
     });
 
     it("exports the sub-agent as a native Codex session that resumes with its history", async () => {
-      const target = await warmCodex("warm-up omni codex");
+      const target = await warmCodexSandbox(mock, "warm-up omni codex");
       const exported = await runExporter(omni, [
         "--target",
         "codex",
@@ -309,7 +298,7 @@ describeInContainer(
     }, 240_000);
 
     it("exports the parent with its delegation and inbox read, and Codex replays them in order", async () => {
-      const target = await warmCodex("warm-up omni parent");
+      const target = await warmCodexSandbox(mock, "warm-up omni parent");
       const exported = await runExporter(omni, [
         "--target",
         "codex",
@@ -364,7 +353,7 @@ describeInContainer(
     }, 300_000);
 
     it("skips a conversation that is already exported", async () => {
-      const target = await warmCodex("warm-up omni again");
+      const target = await warmCodexSandbox(mock, "warm-up omni again");
       const args = [
         "--target",
         "codex",
