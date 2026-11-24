@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -136,7 +137,7 @@ describe("omnigent-codex-sync", () => {
     expect(rows().split("\n")).toHaveLength(1);
   });
 
-  it("skips rollouts without session_meta and ignores rollouts outside codex-home", () => {
+  it("ignores rollouts without session_meta and outside codex-native bridges", () => {
     writeRollout(sessions(), "rollout-bad.jsonl", [{ type: "event_msg" }]);
     writeRollout(
       join(omnigent, "elsewhere"),
@@ -145,9 +146,47 @@ describe("omnigent-codex-sync", () => {
     );
     const r = run("--apply");
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain("skip (no session_meta)");
-    expect(r.stdout).toContain("1 rollouts found, 0 synced, 1 skipped");
+    expect(r.stdout).toContain("0 rollouts found");
     expect(rows()).toBe("");
+  });
+
+  it("labels sub-agent sessions and --sub-agents-only filters to them", () => {
+    const PARENT = "878cab88463741a5a98dfd0db03b5959";
+    const CHILD = "aa31d2d83f174fe18b189f2b0b9528b5";
+    const dirFor = (id: string) =>
+      join(
+        omnigent,
+        "codex-native",
+        createHash("sha256").update(id).digest("hex").slice(0, 32),
+        "codex-home",
+        "sessions",
+        "2026",
+        "11",
+        "23",
+      );
+    writeRollout(
+      dirFor(PARENT),
+      "rollout-p-parent.jsonl",
+      validLines("parent-t"),
+    );
+    writeRollout(dirFor(CHILD), "rollout-c-child.jsonl", validLines("child-t"));
+    execFileSync("sqlite3", [
+      join(omnigent, "chat.db"),
+      `CREATE TABLE conversations (id BLOB NOT NULL, title TEXT, parent_conversation_id BLOB, root_conversation_id BLOB NOT NULL, workspace_id INTEGER NOT NULL DEFAULT 0);
+       CREATE TABLE omnigent_conversation_metadata (workspace_id INTEGER NOT NULL DEFAULT 0, id BLOB NOT NULL, kind INTEGER NOT NULL DEFAULT 1, sub_agent_name TEXT);
+       INSERT INTO conversations VALUES (x'${PARENT}', 'P', NULL, x'${PARENT}', 0);
+       INSERT INTO conversations VALUES (x'${CHILD}', 'C', x'${PARENT}', x'${PARENT}', 0);
+       INSERT INTO omnigent_conversation_metadata VALUES (0, x'${PARENT}', 1, NULL);
+       INSERT INTO omnigent_conversation_metadata VALUES (0, x'${CHILD}', 2, 'reviewer');`,
+    ]);
+    const all = run();
+    expect(all.stdout).toContain(
+      `child-t  /work/demo [sub-agent reviewer of ${PARENT}]`,
+    );
+    expect(all.stdout).toContain("2 rollouts found");
+    const only = run("--sub-agents-only");
+    expect(only.stdout).toContain("1 rollouts found");
+    expect(only.stdout).not.toContain("parent-t");
   });
 
   it("handles a missing Omnigent data dir", () => {
