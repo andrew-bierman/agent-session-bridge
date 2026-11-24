@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   isCodexThreadId,
   listOmnigentConversations,
+  NO_OUTPUT_TEXT,
   normalizeOmnigentConversationId,
   omnigentCodexThreadId,
   omnigentItemsToMessages,
@@ -62,6 +63,35 @@ describe("omnigentItemsToMessages", () => {
     );
   });
 
+  it("pairs a tool call that never got an output with an error result", () => {
+    const messages = omnigentItemsToMessages([
+      row(1, 1, {
+        role: "user",
+        content: [{ type: "input_text", text: "go" }],
+      }),
+      row(2, 2, { name: "sh", arguments: "{}", call_id: "lost" }),
+      row(3, 2, { name: "sh", arguments: "{}", call_id: "kept" }),
+      row(4, 3, { call_id: "kept", output: "done" }),
+    ]);
+    expect(messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+    ]);
+    expect(messages[2]!.content).toEqual([
+      {
+        type: "tool_result",
+        toolCallId: "lost",
+        toolName: "sh",
+        output: NO_OUTPUT_TEXT,
+        isError: true,
+      },
+    ]);
+    expect(messages[4]!.content[0]).toMatchObject({ output: "done" });
+  });
+
   it("skips events, unknown types, empty text and malformed JSON", () => {
     const messages = omnigentItemsToMessages([
       row(0, 8, { event_type: "session.resource.created" }),
@@ -109,12 +139,17 @@ describe("omnigentItemsToMessages", () => {
       row(3, 2, { name: "c", call_id: "3" }),
       row(4, 3, { call_id: "1", output: { ok: true } }),
     ]);
-    expect(messages[0]!.content[0]).toMatchObject({ arguments: { k: 1 } });
-    expect(messages[1]!.content[0]).toMatchObject({
+    const calls = messages.filter((m) => m.role === "assistant");
+    expect(calls[0]!.content[0]).toMatchObject({ arguments: { k: 1 } });
+    expect(calls[1]!.content[0]).toMatchObject({
       arguments: { value: "plain text" },
     });
-    expect(messages[2]!.content[0]).toMatchObject({ arguments: {} });
-    expect(messages[3]!.content[0]).toMatchObject({ output: '{"ok":true}' });
+    expect(calls[2]!.content[0]).toMatchObject({ arguments: {} });
+    const output = messages.find(
+      (m) =>
+        m.content[0]?.type === "tool_result" && m.content[0].toolCallId === "1",
+    );
+    expect(output!.content[0]).toMatchObject({ output: '{"ok":true}' });
   });
 
   it("accepts string message content", () => {

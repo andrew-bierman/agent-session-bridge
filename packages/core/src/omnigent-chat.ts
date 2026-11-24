@@ -49,6 +49,10 @@ const ITEM_FUNCTION_CALL = 2;
 const ITEM_FUNCTION_OUTPUT = 3;
 const KIND_SUB_AGENT = 2;
 
+/** Stands in for the output of a call Omnigent never recorded a result for. */
+export const NO_OUTPUT_TEXT =
+  "[Omnigent recorded no output for this tool call; it was interrupted or never returned.]";
+
 export function normalizeOmnigentConversationId(id: string): string {
   const hex = id.replaceAll("-", "").toLowerCase();
   if (!HEX32.test(hex)) {
@@ -242,9 +246,35 @@ export function omnigentItemsToMessages(
     }
   }
 
+  // A call whose output never arrived (an interrupted conversation) would be
+  // rejected on resume: Anthropic requires a result for every tool_use and the
+  // Responses API for every function_call. Record that nothing came back.
+  const paired: NormalizedMessage[] = [];
+  for (const message of slots) {
+    paired.push(message);
+    for (const c of message.content) {
+      if (c.type === "tool_call" && !outputSlot.has(c.id)) {
+        paired.push({
+          id: `${message.id}-no-output`,
+          role: "tool",
+          timestamp: message.timestamp,
+          content: [
+            {
+              type: "tool_result",
+              toolCallId: c.id,
+              toolName: c.name,
+              output: NO_OUTPUT_TEXT,
+              isError: true,
+            },
+          ],
+        });
+      }
+    }
+  }
+
   // A tool result whose call never made it into history would be rejected by
   // Codex/Claude on resume, so drop orphans.
-  return slots.filter((message) =>
+  return paired.filter((message) =>
     message.content.every(
       (c) => c.type !== "tool_result" || callSlot.has(c.toolCallId),
     ),
