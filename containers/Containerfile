@@ -48,10 +48,10 @@ RUN set -x; \
 RUN set -x; \
     ( mkdir -p /opt/pi \
       && cd /opt/pi \
-      && curl -fsSL "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-x64.tar.gz" -o pi.tar.gz \
+      && curl -fsSL "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-x64.tar.gz" -o pi-linux-x64.tar.gz \
       && curl -fsSL "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/SHA256SUMS" -o SHA256SUMS \
       && grep " pi-linux-x64.tar.gz\$" SHA256SUMS | sha256sum -c - \
-      && tar -xz -f pi.tar.gz \
+      && tar -xz -f pi-linux-x64.tar.gz \
       && ln -s "$(find /opt/pi -type f -name pi | head -1)" /usr/local/bin/pi \
       && test -x /usr/local/bin/pi ) \
     || echo "pi ${PI_VERSION} failed to install" > /opt/asb/skips/pi.txt

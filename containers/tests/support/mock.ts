@@ -1,0 +1,98 @@
+import { LLMock, type JournalEntry } from "@copilotkit/aimock";
+
+/**
+ * A scripted model for the container tier. Only model responses are faked; the
+ * harnesses are real. One server speaks OpenAI Responses and Anthropic
+ * Messages, and its journal records every request so tests can prove each
+ * harness reached it (and see the history it was sent).
+ */
+export interface ToolRound {
+  /** Tool call id the model emits; the follow-up request carries it back. */
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export type Wire = "responses" | "messages" | "chat";
+
+const wirePrefix: Record<Wire, string> = {
+  responses: "/v1/responses",
+  messages: "/v1/messages",
+  chat: "/v1/chat/completions",
+};
+
+export class ScriptedMock {
+  private constructor(readonly llm: LLMock) {}
+
+  static async start(): Promise<ScriptedMock> {
+    const llm = new LLMock({ port: 0 });
+    await llm.start();
+    return new ScriptedMock(llm);
+  }
+
+  /** Base URL for OpenAI-style clients (`OPENAI_BASE_URL`). */
+  get openaiBaseUrl(): string {
+    return `${this.llm.url}/v1`;
+  }
+
+  /** Base URL for Anthropic clients (`ANTHROPIC_BASE_URL`, no `/v1`). */
+  get anthropicBaseUrl(): string {
+    return this.llm.url;
+  }
+
+  /** Answer a prompt with plain text. */
+  reply(prompt: string | RegExp, text: string): this {
+    this.llm.onMessage(prompt, { content: text });
+    return this;
+  }
+
+  /**
+   * Answer a prompt with one tool call, then answer the request that carries
+   * the tool's result with `finalText`.
+   */
+  toolRound(
+    prompt: string | RegExp,
+    round: ToolRound,
+    finalText: string,
+  ): this {
+    // aimock serves the first matching fixture. The follow-up request still
+    // carries the original prompt, so the tool-result fixture must come first or
+    // the prompt fixture would answer it again with the same tool call.
+    this.llm.onToolResult(round.id, { content: finalText });
+    this.llm.onMessage(prompt, {
+      toolCalls: [{ id: round.id, name: round.name, arguments: round.args }],
+    });
+    return this;
+  }
+
+  /** Every request the server received, oldest first. */
+  requests(): JournalEntry[] {
+    return this.llm.getRequests();
+  }
+
+  requestsOn(wire: Wire): JournalEntry[] {
+    return this.requests().filter((entry) =>
+      entry.path.startsWith(wirePrefix[wire]),
+    );
+  }
+
+  /** Requests whose body mentions `text` (history, prompt, or tool output). */
+  requestsContaining(text: string): JournalEntry[] {
+    return this.requests().filter((entry) =>
+      JSON.stringify(entry.body ?? "").includes(text),
+    );
+  }
+
+  /** Requests no fixture answered. A scenario expects none. */
+  unmatched(): JournalEntry[] {
+    return this.requests().filter((entry) => entry.response.status === 404);
+  }
+
+  clearRequests(): void {
+    this.llm.clearRequests();
+  }
+
+  async stop(): Promise<void> {
+    await this.llm.stop();
+  }
+}
