@@ -108,7 +108,8 @@ describeToolInContainer(
       );
       const result = blocks.find((b) => b.type === "tool_result");
       expect(result).toMatchObject({ toolCallId: "call_pi_echo" });
-      expect(JSON.stringify(result)).toContain("hello-from-pi");
+      // Plain text, not a JSON-encoded content array.
+      expect((result as { output: string }).output).toBe("hello-from-pi\n");
       expect(JSON.stringify(messages)).toContain(FINAL);
     });
 

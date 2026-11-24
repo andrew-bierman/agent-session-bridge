@@ -375,7 +375,7 @@ export function convertPiEntryToNormalized(
           toolCallId: String(message.toolCallId ?? ""),
           toolName:
             typeof message.toolName === "string" ? message.toolName : undefined,
-          output: JSON.stringify(message.content ?? []),
+          output: piToolResultOutput(message.content),
           isError: Boolean(message.isError),
         },
       ],
@@ -533,6 +533,28 @@ export function convertCodexItemToNormalized(
   }
 
   return null;
+}
+
+/**
+ * Pi stores a tool result as a content array. Text-only results become the
+ * plain text they carry (the reverse conversion wraps it back into one text
+ * block); anything else, such as an image, keeps its structure as JSON.
+ */
+function piToolResultOutput(content: unknown): string {
+  if (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(
+      (block) =>
+        block !== null &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )
+  ) {
+    return content.map((block) => (block as { text: string }).text).join("");
+  }
+  return JSON.stringify(content ?? []);
 }
 
 export function convertNormalizedToPiEntry(
