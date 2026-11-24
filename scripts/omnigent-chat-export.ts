@@ -13,20 +13,22 @@
 // existing file is never overwritten. With --apply and --target codex the
 // newest state_N.sqlite is backed up before the thread index is touched.
 // Requires bun and the sqlite3 CLI.
-import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { convertNormalizedToClaudeLine } from "../packages/core/src/converters.js";
 import {
   listOmnigentConversations,
   normalizeOmnigentConversationId,
   omnigentCodexThreadId,
   readOmnigentConversationMessages,
 } from "../packages/core/src/omnigent-chat.js";
+import {
+  codexRolloutPath,
+  exportClaudeSession,
+  exportCodexSession,
+} from "../packages/core/src/native-export.js";
 import { omnigentDataDir } from "../packages/core/src/omnigent.js";
 import { getClaudeCodeProjectDir } from "../packages/core/src/path-utils.js";
-import { backfillCodexThreadIndex } from "../packages/core/src/runtime.js";
-import { convertConversationToCodexRollout } from "../packages/core/src/sync.js";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
@@ -95,18 +97,10 @@ for (const conv of selected) {
   }
   const cwd = cwdOverride ?? conv.workspace ?? process.cwd();
   const sessionId = omnigentCodexThreadId(conv.id);
-  const started = new Date(messages[0]!.timestamp);
+  const homeDir = join(codexHome, "..");
 
   if (target === "codex") {
-    const stamp = started.toISOString().slice(0, 19).replaceAll(":", "-");
-    const dir = join(
-      codexHome,
-      "sessions",
-      String(started.getUTCFullYear()),
-      String(started.getUTCMonth() + 1).padStart(2, "0"),
-      String(started.getUTCDate()).padStart(2, "0"),
-    );
-    const dest = join(dir, `rollout-${stamp}-${sessionId}.jsonl`);
+    const dest = codexRolloutPath(codexHome, sessionId, messages[0]!.timestamp);
     if (await exists(dest)) {
       console.log(`skip (already present): ${label}`);
       skipped++;
@@ -117,22 +111,19 @@ for (const conv of selected) {
     );
     if (!apply) continue;
     await backupCodexState();
-    const items = convertConversationToCodexRollout(messages, cwd, sessionId);
-    await mkdir(dir, { recursive: true });
-    await writeFile(
-      dest,
-      `${items.map((item) => JSON.stringify({ timestamp: messages[0]!.timestamp, ...item })).join("\n")}\n`,
-    );
-    const result = await backfillCodexThreadIndex({
-      homeDir: join(codexHome, ".."),
-      threadId: sessionId,
-      rolloutPath: dest,
+    const result = await exportCodexSession({
+      messages,
       cwd,
+      sessionId,
+      codexHome,
+      homeDir,
     });
-    console.log(`  indexed: ${JSON.stringify(result)}`);
+    console.log(`  indexed: ${JSON.stringify(result.indexed)}`);
   } else {
-    const dir = getClaudeCodeProjectDir(cwd, claudeHome);
-    const dest = join(dir, `${sessionId}.jsonl`);
+    const dest = join(
+      getClaudeCodeProjectDir(cwd, claudeHome),
+      `${sessionId}.jsonl`,
+    );
     if (await exists(dest)) {
       console.log(`skip (already present): ${label}`);
       skipped++;
@@ -142,19 +133,12 @@ for (const conv of selected) {
       `${apply ? "export" : "would export"} -> claude ${sessionId}  ${cwd}  ${label}`,
     );
     if (!apply) continue;
-    let parent: string | null = null;
-    const lines = messages.map((message) => {
-      const line = convertNormalizedToClaudeLine(
-        message,
-        sessionId,
-        parent,
-        cwd,
-      );
-      parent = line.uuid ?? null;
-      return JSON.stringify(line);
+    await exportClaudeSession({
+      messages,
+      cwd,
+      sessionId,
+      homeDir: claudeHome,
     });
-    await mkdir(dir, { recursive: true });
-    await writeFile(dest, `${lines.join("\n")}\n`);
   }
   written++;
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Run the container integration tests inside the hermetic image.
 //
-// Usage: bun scripts/containers/run.ts [--tag <image>] [--no-build] [-- <test command>]
+// Usage: bun scripts/containers/run.ts [--tag <image>] [--no-build] [<test command>]
 //
 // The container runs with no network, a throwaway HOME, and one bind mount: a
 // per-run output directory under ~/.cache/agent-session-bridge/containers/. No
@@ -24,12 +24,53 @@ export interface RunOptions {
   testArgs?: string[];
 }
 
+export interface ParsedRunArgs {
+  tag: string;
+  noBuild: boolean;
+  /** The test command to run in the image, or undefined for the default. */
+  testArgs?: string[];
+}
+
+/**
+ * Flags come first (`--tag <image>`, `--no-build`); the first other argument
+ * starts the command run in the image, e.g.
+ * `run.ts bun test containers/tests/codex.test.ts`. A leading `--` is accepted
+ * for readability, though `bun` strips it before the script sees it.
+ */
+export function parseRunArgs(argv: string[]): ParsedRunArgs {
+  let tag = defaultTag;
+  let noBuild = false;
+  let index = 0;
+  for (; index < argv.length; index++) {
+    const arg = argv[index]!;
+    if (arg === "--tag") {
+      tag = argv[++index] ?? defaultTag;
+    } else if (arg === "--no-build") {
+      noBuild = true;
+    } else if (arg === "--") {
+      index++;
+      break;
+    } else {
+      break;
+    }
+  }
+  const rest = argv.slice(index);
+  return { tag, noBuild, ...(rest.length > 0 ? { testArgs: rest } : {}) };
+}
+
 export function newRunId(): string {
   return `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
 }
 
 export function outDirFor(home: string, runId: string): string {
-  return join(home, ".cache", "agent-session-bridge", "containers", runId, "out");
+  return join(
+    home,
+    ".cache",
+    "agent-session-bridge",
+    "containers",
+    runId,
+    "out",
+  );
 }
 
 export function buildRunArgv(options: RunOptions): string[] {
@@ -68,16 +109,12 @@ async function spawn(argv: string[]): Promise<number> {
 }
 
 if (import.meta.main) {
-  const argv = process.argv.slice(2);
-  const split = argv.indexOf("--");
-  const own = split >= 0 ? argv.slice(0, split) : argv;
-  const testArgs = split >= 0 ? argv.slice(split + 1) : undefined;
-  const tagIndex = own.indexOf("--tag");
-  const tag = tagIndex >= 0 ? (own[tagIndex + 1] ?? defaultTag) : defaultTag;
+  const parsed = parseRunArgs(process.argv.slice(2));
+  const { tag, noBuild, testArgs } = parsed;
   const runtime = selectRuntime();
   const root = join(import.meta.dirname, "..", "..");
 
-  if (!own.includes("--no-build")) {
+  if (!noBuild) {
     const built = await spawn(buildArgv(runtime, tag, root));
     if (built !== 0) process.exit(built);
   }

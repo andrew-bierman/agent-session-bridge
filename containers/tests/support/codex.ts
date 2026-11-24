@@ -13,6 +13,8 @@ import { join } from "node:path";
 /** An isolated Codex: its own CODEX_HOME, working directory and environment. */
 export interface CodexSandbox {
   root: string;
+  /** HOME for the run; `codexHome` is `<homeDir>/.codex`, like a real user. */
+  homeDir: string;
   codexHome: string;
   project: string;
   env: Record<string, string>;
@@ -26,34 +28,34 @@ export const CODEX_MODEL = "gpt-5.1-codex";
  */
 export function createCodexSandbox(openaiBaseUrl: string): CodexSandbox {
   const root = mkdtempSync(join(tmpdir(), "asb-codex-"));
-  const codexHome = join(root, "codex-home");
+  const homeDir = join(root, "home");
+  const codexHome = join(homeDir, ".codex");
   const project = join(root, "project");
   mkdirSync(codexHome, { recursive: true });
   mkdirSync(project, { recursive: true });
+  // Redirect the built-in `openai` provider, as a user routing through a gateway
+  // does. A custom provider id would make Codex refuse to resume exported
+  // sessions, which carry `model_provider: "openai"`.
   writeFileSync(
     join(codexHome, "config.toml"),
     [
       `model = "${CODEX_MODEL}"`,
-      `model_provider = "mock"`,
-      "",
-      "[model_providers.mock]",
-      `name = "Mock"`,
-      `base_url = "${openaiBaseUrl}"`,
-      `env_key = "MOCK_API_KEY"`,
-      `wire_api = "responses"`,
+      `openai_base_url = "${openaiBaseUrl}"`,
       "",
     ].join("\n"),
   );
   return {
     root,
+    homeDir,
     codexHome,
     project,
     env: {
       PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-      HOME: join(root, "home"),
+      HOME: homeDir,
       TMPDIR: process.env.TMPDIR ?? tmpdir(),
       CODEX_HOME: codexHome,
-      MOCK_API_KEY: "sk-aimock-codex",
+      OPENAI_API_KEY: "sk-aimock-codex",
+      CODEX_API_KEY: "sk-aimock-codex",
       TERM: "dumb",
     },
   };
@@ -141,8 +143,22 @@ export function threadRows(
   if (!newest) return [];
   const out = execFileSync(
     "sqlite3",
-    ["-readonly", "-json", join(codexHome, newest), `SELECT ${columns} FROM threads ORDER BY id;`],
+    [
+      "-readonly",
+      "-json",
+      join(codexHome, newest),
+      `SELECT ${columns} FROM threads ORDER BY id;`,
+    ],
     { encoding: "utf8" },
   ).trim();
   return out ? (JSON.parse(out) as Record<string, unknown>[]) : [];
 }
+
+export const resumeArgs = (id: string, prompt: string): string[] => [
+  "exec",
+  "resume",
+  id,
+  "--json",
+  "--skip-git-repo-check",
+  prompt,
+];

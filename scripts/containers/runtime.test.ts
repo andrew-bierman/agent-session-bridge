@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { buildArgv, defaultTag } from "./build.js";
-import { buildRunArgv, newRunId, outDirFor } from "./run.js";
+import { buildRunArgv, newRunId, outDirFor, parseRunArgs } from "./run.js";
 import { selectRuntime } from "./runtime.js";
 
 const found = (names: string[]) => (cmd: string) =>
@@ -9,15 +9,13 @@ const found = (names: string[]) => (cmd: string) =>
 
 describe("selectRuntime", () => {
   it("prefers podman when both runtimes exist", () => {
-    expect(
-      selectRuntime({ env: {}, which: found(["podman", "docker"]) }),
-    ).toBe("podman");
+    expect(selectRuntime({ env: {}, which: found(["podman", "docker"]) })).toBe(
+      "podman",
+    );
   });
 
   it("falls back to docker when podman is missing", () => {
-    expect(selectRuntime({ env: {}, which: found(["docker"]) })).toBe(
-      "docker",
-    );
+    expect(selectRuntime({ env: {}, which: found(["docker"]) })).toBe("docker");
   });
 
   it("lets CONTAINER_RUNTIME override the default order", () => {
@@ -137,5 +135,36 @@ describe("buildArgv", () => {
     expect(argv).toContain("CODEX_VERSION=0.172.0");
     expect(argv).toContain("CLAUDE_CODE_VERSION=2.1.331");
     expect(argv.at(-1)).toBe("/repo");
+  });
+});
+
+describe("parseRunArgs", () => {
+  it("uses the default tag, builds, and runs the default command with no arguments", () => {
+    expect(parseRunArgs([])).toEqual({ tag: defaultTag, noBuild: false });
+  });
+
+  it("treats the first non-flag argument as the start of the test command", () => {
+    expect(
+      parseRunArgs([
+        "--no-build",
+        "bun",
+        "test",
+        "containers/tests/x.test.ts",
+        "-t",
+        "name",
+      ]),
+    ).toEqual({
+      tag: defaultTag,
+      noBuild: true,
+      testArgs: ["bun", "test", "containers/tests/x.test.ts", "-t", "name"],
+    });
+  });
+
+  it("accepts --tag and an explicit -- separator", () => {
+    expect(parseRunArgs(["--tag", "img:1", "--", "bun", "test"])).toEqual({
+      tag: "img:1",
+      noBuild: false,
+      testArgs: ["bun", "test"],
+    });
   });
 });

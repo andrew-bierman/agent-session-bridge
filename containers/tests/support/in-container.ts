@@ -20,3 +20,16 @@ export function skipReason(tool: "opencode" | "pi"): string | null {
   const file = join(skipDir, `${tool}.txt`);
   return existsSync(file) ? readFileSync(file, "utf8").trim() : null;
 }
+
+/**
+ * Copy a scenario's artifacts (rollouts, sessions, chat.db) into the mounted
+ * output directory so a failing run can be inspected on the host. A no-op
+ * outside the container or when no output directory is mounted.
+ */
+export function saveArtifacts(name: string, from: string): void {
+  const out = process.env.ASB_OUT ?? "/out";
+  if (!inContainer || !existsSync(out)) return;
+  const { cpSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
+  mkdirSync(join(out, "artifacts"), { recursive: true });
+  cpSync(from, join(out, "artifacts", name), { recursive: true });
+}

@@ -26,6 +26,19 @@ export class ScriptedMock {
 
   static async start(): Promise<ScriptedMock> {
     const llm = new LLMock({ port: 0 });
+    // Codex opens a WebSocket at startup and sends a warm-up frame that carries
+    // no user turn. Unanswered, it costs a 20 second timeout before Codex falls
+    // back. Answer only requests with neither a user message nor a tool result:
+    // every real prompt has a user message, and a WebSocket continuation carries
+    // just the tool result, so both still reach their own fixtures and an
+    // unscripted prompt still returns 404.
+    llm.addFixture({
+      match: {
+        predicate: (req) =>
+          !req.messages.some((m) => m.role === "user" || m.role === "tool"),
+      },
+      response: { content: "ready" },
+    });
     await llm.start();
     return new ScriptedMock(llm);
   }
@@ -86,6 +99,13 @@ export class ScriptedMock {
   /** Requests no fixture answered. A scenario expects none. */
   unmatched(): JournalEntry[] {
     return this.requests().filter((entry) => entry.response.status === 404);
+  }
+
+  /** One readable line per unmatched request, for assertion failure output. */
+  unmatchedSummary(): string[] {
+    return this.unmatched().map(
+      (entry) => `${entry.method} ${entry.path} -> ${entry.response.status}`,
+    );
   }
 
   clearRequests(): void {
