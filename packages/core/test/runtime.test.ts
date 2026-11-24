@@ -5,7 +5,7 @@ import { zstdCompressSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   backfillCodexThreadIndex,

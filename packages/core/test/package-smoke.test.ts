@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import cliPackage from "../../cli/package.json";
 import corePackage from "../package.json";

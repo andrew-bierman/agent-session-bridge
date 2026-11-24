@@ -5,6 +5,12 @@
 // Usage:
 //   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply]
 //
+// Omnigent keeps each Codex session's private CODEX_HOME at
+// <data dir>/codex-native/<hash>/codex-home. The data dir is ~/.omnigent, or
+// $OMNIGENT_DATA_DIR when set (this script honors both). Omnigent prunes an
+// inactive bridge dir 7 days after its last activity, so run this at least
+// weekly (it is idempotent) or the native copy is lost with the private home.
+//
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
 // Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
 import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
@@ -20,7 +26,10 @@ const opt = (name: string, fallback: string) => {
 };
 
 const omnigentData = resolve(
-  opt("--omnigent-data", process.env.OMNIGENT_DATA_DIR ?? join(homedir(), ".omnigent")),
+  opt(
+    "--omnigent-data",
+    process.env.OMNIGENT_DATA_DIR ?? join(homedir(), ".omnigent"),
+  ),
 );
 const codexHome = resolve(opt("--codex-home", join(homedir(), ".codex")));
 const apply = flag("--apply");
@@ -57,7 +66,11 @@ async function sessionMeta(rolloutPath: string): Promise<SessionMeta | null> {
     try {
       const entry = JSON.parse(line);
       if (entry.type === "session_meta" && entry.payload?.id) {
-        return { id: entry.payload.id, cwd: entry.payload.cwd, timestamp: entry.payload.timestamp };
+        return {
+          id: entry.payload.id,
+          cwd: entry.payload.cwd,
+          timestamp: entry.payload.timestamp,
+        };
       }
     } catch {
       // ignore malformed line
@@ -68,11 +81,14 @@ async function sessionMeta(rolloutPath: string): Promise<SessionMeta | null> {
 
 const found: string[] = [];
 for await (const p of walk(omnigentData)) {
-  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes("codex-home")) found.push(p);
+  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes("codex-home"))
+    found.push(p);
 }
 
 if (apply) {
-  const dbs = (await readdir(codexHome)).filter((f) => /^state_\d+\.sqlite$/.test(f)).sort();
+  const dbs = (await readdir(codexHome))
+    .filter((f) => /^state_\d+\.sqlite$/.test(f))
+    .sort();
   const newest = dbs.at(-1);
   if (newest) {
     const backup = join(codexHome, `${newest}.bak-${Date.now()}`);
@@ -117,4 +133,6 @@ for (const src of found) {
   console.log(`  indexed: ${JSON.stringify(result)}`);
   copied++;
 }
-console.log(`${found.length} rollouts found, ${copied} synced, ${skipped} skipped${apply ? "" : " (dry run)"}`);
+console.log(
+  `${found.length} rollouts found, ${copied} synced, ${skipped} skipped${apply ? "" : " (dry run)"}`,
+);

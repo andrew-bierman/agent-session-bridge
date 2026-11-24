@@ -381,12 +381,12 @@ async function installRuntimeBundle(
 
     if (!(await pathExists(sourcePackageJson, deps))) {
       throw new Error(
-        `Missing packaged asset: ${sourcePackageJson}. Run pnpm build before setup.`,
+        `Missing packaged asset: ${sourcePackageJson}. Run bun run build before setup.`,
       );
     }
     if (!(await pathExists(sourceDistDir, deps))) {
       throw new Error(
-        `Missing packaged asset: ${sourceDistDir}. Run pnpm build before setup.`,
+        `Missing packaged asset: ${sourceDistDir}. Run bun run build before setup.`,
       );
     }
 

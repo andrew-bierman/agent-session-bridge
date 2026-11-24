@@ -293,9 +293,7 @@ export function convertConversationToCodexRollout(
       [...group]
         .reverse()
         .flatMap((message) =>
-          message.role === "assistant"
-            ? [extractMessageText(message)]
-            : [],
+          message.role === "assistant" ? [extractMessageText(message)] : [],
         )
         .find((value): value is string => Boolean(value)) ?? "";
 

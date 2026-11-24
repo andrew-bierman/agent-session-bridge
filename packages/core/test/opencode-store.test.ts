@@ -22,7 +22,7 @@ import {
   returnCodexTurnsToOpenCode,
   syncSourceSessionToTargets,
 } from "../src/runtime.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import {
   appendOpenCodeMessages,
   readOpenCodeRows,

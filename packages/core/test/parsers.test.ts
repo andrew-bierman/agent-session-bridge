@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   extractMessageEntries,

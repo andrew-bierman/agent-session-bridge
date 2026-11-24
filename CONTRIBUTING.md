@@ -3,10 +3,10 @@
 ## Setup
 
 ```bash
-pnpm install
-pnpm build
-pnpm test
-pnpm typecheck
+bun install
+bun run build
+bun test
+bun check .
 ```
 
 ## Workflow
@@ -16,9 +16,9 @@ Use the red-green-refactor loop described in [TESTING.md](./TESTING.md).
 Before opening a PR:
 
 ```bash
-pnpm release:check
-pnpm fixture:validate
-pnpm exec prettier --check .
+bun run release:check
+bun run fixture:validate
+bun fmt --check
 ```
 
 ## Project Layout
