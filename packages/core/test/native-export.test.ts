@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+  backupNewestCodexState,
   exportClaudeSession,
   exportCodexSession,
 } from "../src/native-export.js";
@@ -130,5 +138,32 @@ describe("exportClaudeSession", () => {
     await expect(
       exportClaudeSession({ ...params(), messages: [] }),
     ).rejects.toThrow("no messages");
+  });
+});
+
+describe("backupNewestCodexState", () => {
+  it("backs up the numerically newest state database with its WAL sidecars", async () => {
+    const home = mkdtempSync(join(tmpdir(), "asb-backup-"));
+    try {
+      writeFileSync(join(home, "state_5.sqlite"), "five");
+      writeFileSync(join(home, "state_10.sqlite"), "ten");
+      writeFileSync(join(home, "state_10.sqlite-wal"), "wal");
+      const result = await backupNewestCodexState(home);
+      expect(result?.name).toBe("state_10.sqlite");
+      expect(existsSync(result!.backup)).toBe(true);
+      expect(existsSync(`${result!.backup}-wal`)).toBe(true);
+      expect(existsSync(`${result!.backup}-shm`)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined when the home has no state database", async () => {
+    const home = mkdtempSync(join(tmpdir(), "asb-backup-"));
+    try {
+      expect(await backupNewestCodexState(home)).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

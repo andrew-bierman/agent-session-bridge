@@ -217,3 +217,20 @@ export async function resumeInTui(
   terminal.kill();
   return { reached, screen };
 }
+
+/**
+ * A fresh Codex whose thread database exists, as a real user's does: one
+ * throwaway turn against the mock creates it.
+ */
+export async function warmCodexSandbox(
+  mock: ScriptedMock,
+  label: string,
+): Promise<CodexSandbox> {
+  const sandbox = createCodexSandbox(mock.openaiBaseUrl);
+  mock.reply(label, `${label} ok`);
+  const run = await runCodex(sandbox, execArgs(sandbox.project, label));
+  if (run.code !== 0) {
+    throw new Error(`warm-up Codex run failed (${run.code}): ${run.stderr}`);
+  }
+  return sandbox;
+}

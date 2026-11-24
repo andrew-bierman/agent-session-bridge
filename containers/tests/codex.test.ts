@@ -15,6 +15,7 @@ import {
   threadRows,
   type CodexSandbox,
   type RolloutLine,
+  warmCodexSandbox,
 } from "./support/codex.js";
 import {
   FINAL,
@@ -43,15 +44,6 @@ function keysByKind(lines: RolloutLine[]): Map<string, Set<string>> {
     out.set(kind(line), set);
   }
   return out;
-}
-
-/** A fresh Codex whose thread database exists, as a real user's does. */
-async function warmSandbox(label: string): Promise<CodexSandbox> {
-  const sandbox = createCodexSandbox(mock.openaiBaseUrl);
-  mock.reply(label, `${label} ok`);
-  const run = await runCodex(sandbox, execArgs(sandbox.project, label));
-  expect(run.code).toBe(0);
-  return sandbox;
 }
 
 describeInContainer("real Codex against the mock", () => {
@@ -185,7 +177,7 @@ describeInContainer("real Codex against the mock", () => {
   });
 
   it("resumes an exported session and replays its history, tool call included, to the model", async () => {
-    const sandbox = await warmSandbox("warm-up resume");
+    const sandbox = await warmCodexSandbox(mock, "warm-up resume");
     const messages = echoConversation({ callId: "call_exported_1" });
     const result = await exportCodexSession({
       messages,
@@ -231,7 +223,7 @@ describeInContainer("real Codex against the mock", () => {
   }, 240_000);
 
   it("indexes and resumes a session whose first message is 300KB", async () => {
-    const sandbox = await warmSandbox("warm-up big");
+    const sandbox = await warmCodexSandbox(mock, "warm-up big");
     const marker = "BIGSTART";
     const prompt = `${marker} ${"x".repeat(300_000)} BIGEND`;
     const messages: NormalizedMessage[] = echoConversation({
@@ -276,7 +268,7 @@ describeInContainer("real Codex against the mock", () => {
   }, 240_000);
 
   it("re-exporting leaves one thread row and an unchanged rollout", async () => {
-    const sandbox = await warmSandbox("warm-up idempotent");
+    const sandbox = await warmCodexSandbox(mock, "warm-up idempotent");
     const params = {
       messages: echoConversation({ callId: "call_idem_1" }),
       cwd: sandbox.project,

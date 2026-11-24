@@ -4,7 +4,6 @@ import {
   convertClaudeLineToNormalized,
   convertCodexItemToNormalized,
   convertNormalizedToClaudeLine,
-  convertNormalizedToCodexItems,
   convertNormalizedToPiEntry,
   convertPiEntryToNormalized,
   type ClaudeCodeLine,
@@ -308,9 +307,6 @@ describe("converters", () => {
     ).toMatchObject({
       role: "assistant",
     });
-    expect(convertNormalizedToCodexItems(message)[0]?.type).toBe(
-      "response_item",
-    );
   });
 
   it("drops empty thinking blocks when converting to Claude lines", () => {

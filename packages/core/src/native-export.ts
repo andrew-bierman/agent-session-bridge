@@ -89,13 +89,26 @@ export async function pathExists(path: string): Promise<boolean> {
 export async function backupNewestCodexState(
   codexHome: string,
 ): Promise<{ name: string; backup: string } | undefined> {
+  // Numeric, not lexical: state_10 is newer than state_5.
+  const generation = (file: string) =>
+    Number(/^state_(\d+)\.sqlite$/.exec(file)![1]);
   const newest = (await readdir(codexHome))
     .filter((file) => /^state_\d+\.sqlite$/.test(file))
-    .sort()
+    .sort((a, b) => generation(a) - generation(b))
     .at(-1);
   if (!newest) return undefined;
-  const backup = join(codexHome, `${newest}.bak-${Date.now()}`);
+  const stamp = Date.now();
+  const backup = join(codexHome, `${newest}.bak-${stamp}`);
   await copyFile(join(codexHome, newest), backup);
+  // A live Codex keeps recent writes in the WAL; a backup without it can lose them.
+  for (const suffix of ["-wal", "-shm"]) {
+    if (await pathExists(join(codexHome, `${newest}${suffix}`))) {
+      await copyFile(
+        join(codexHome, `${newest}${suffix}`),
+        `${backup}${suffix}`,
+      );
+    }
+  }
   return { name: newest, backup };
 }
 
