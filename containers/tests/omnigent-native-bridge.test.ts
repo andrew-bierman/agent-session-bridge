@@ -193,8 +193,9 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
       target.codexHome,
       "--apply",
     ]);
+    // A re-run leaves the copy alone but re-indexes it, and says so.
     expect(again.stdout).toContain(
-      `skip (already present): ${session.threadId}`,
+      "0 synced, 1 already present, 0 not indexed",
     );
     expect(
       threadRows(target.codexHome).filter((r) => r.id === session.threadId),
