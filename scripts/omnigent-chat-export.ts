@@ -33,12 +33,22 @@ import { omnigentDataDir } from "../packages/core/src/omnigent.js";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
+// A flag with no value (or another flag in its place) is a usage error: a
+// silently ignored --conversation would select every conversation.
+const valueAt = (i: number, name: string): string => {
+  const v = args[i + 1];
+  if (v === undefined || v === "" || v.startsWith("--")) {
+    console.error(`${name} needs a value`);
+    process.exit(2);
+  }
+  return v;
+};
 const opt = (name: string): string | undefined => {
   const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
+  return i >= 0 ? valueAt(i, name) : undefined;
 };
 const optAll = (name: string): string[] =>
-  args.flatMap((a, i) => (a === name && args[i + 1] ? [args[i + 1]!] : []));
+  args.flatMap((a, i) => (a === name ? [valueAt(i, name)] : []));
 
 const dataDir = resolve(opt("--omnigent-data") ?? omnigentDataDir());
 const target = opt("--target");
@@ -79,6 +89,7 @@ async function backupCodexState(): Promise<void> {
 
 let written = 0;
 let skipped = 0;
+let failed = 0;
 for (const conv of selected) {
   const messages = await readOmnigentConversationMessages(dataDir, conv.id);
   const label = `${conv.id}${conv.kind === "sub_agent" ? ` [sub-agent ${conv.subAgentName ?? "?"} of ${conv.parentId ?? "?"}]` : ""}`;
@@ -110,6 +121,7 @@ for (const conv of selected) {
       homeDir: codexParent,
     });
     console.log(`  indexed: ${JSON.stringify(result.indexed)}`);
+    if (!result.indexed?.indexed) failed++;
   } else {
     const dest = claudeSessionPath(cwd, claudeHome, sessionId);
     if (await pathExists(dest)) {
@@ -133,3 +145,9 @@ for (const conv of selected) {
 console.log(
   `${selected.length} conversations, ${written} exported, ${skipped} skipped${apply ? "" : " (dry run)"}`,
 );
+if (failed > 0) {
+  console.error(
+    `${failed} rollout(s) written but not indexed; re-run to retry`,
+  );
+  process.exit(1);
+}

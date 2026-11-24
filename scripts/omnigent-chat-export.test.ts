@@ -101,6 +101,37 @@ describe("omnigent-chat-export", () => {
     expect(r.stderr).toContain("--target codex|claude is required");
   });
 
+  it.each([
+    [
+      "--conversation with no value",
+      ["--target", "codex", "--apply", "--conversation"],
+    ],
+    [
+      "--conversation with an empty value",
+      ["--target", "codex", "--apply", "--conversation", ""],
+    ],
+    [
+      "--conversation followed by another flag",
+      ["--target", "codex", "--conversation", "--apply"],
+    ],
+    ["--target with no value", ["--target"]],
+  ])("rejects %s instead of selecting every conversation", (_name, extra) => {
+    const r = run(...extra);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("needs a value");
+    expect(existsSync(join(codexHome, "sessions"))).toBe(false);
+  });
+
+  it("rejects a trailing --cwd with no value", () => {
+    const r = spawnSync(
+      "bun",
+      [script, "--omnigent-data", omnigent, "--target", "codex", "--cwd"],
+      { encoding: "utf8" },
+    );
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("--cwd needs a value");
+  });
+
   it("dry run lists sub-agent conversations and writes nothing", () => {
     const r = run("--target", "codex", "--sub-agents-only");
     expect(r.status).toBe(0);

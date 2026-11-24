@@ -58,7 +58,10 @@ export function codexRolloutPath(
  * its final name: write beside it, then rename into place. A truncated file
  * under the final name would be treated as already exported forever.
  */
-async function writeFileAtomic(path: string, text: string): Promise<void> {
+export async function writeFileAtomic(
+  path: string,
+  text: string,
+): Promise<void> {
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
   try {
     await writeFile(temp, text);

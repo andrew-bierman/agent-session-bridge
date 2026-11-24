@@ -22,6 +22,20 @@ export function skipReason(tool: "opencode" | "pi"): string | null {
 }
 
 /**
+ * Like `describeInContainer` for an optional tool: when the image build
+ * recorded why the tool was not installed, the suite is skipped instead of
+ * failing on a missing binary.
+ */
+export function describeToolInContainer(
+  tool: "opencode" | "pi",
+  name: string,
+  fn: () => void,
+): void {
+  if (inContainer && skipReason(tool) === null) describe(name, fn);
+  else describe.skip(name, fn);
+}
+
+/**
  * Copy a scenario's artifacts (rollouts, sessions, chat.db) into the mounted
  * output directory so a failing run can be inspected on the host. A no-op
  * outside the container or when no output directory is mounted.

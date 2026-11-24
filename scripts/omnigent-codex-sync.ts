@@ -15,13 +15,14 @@
 // cannot resume; the copy is retargeted to --model-provider (default openai).
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
 // Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { backfillCodexThreadIndex } from "../packages/core/src/runtime.js";
 import {
   backupNewestCodexState,
   pathExists,
+  writeFileAtomic,
 } from "../packages/core/src/native-export.js";
 import {
   listOmnigentCodexSessions,
@@ -51,7 +52,8 @@ if (apply) {
 }
 
 let copied = 0;
-let skipped = 0;
+let existing = 0;
+let failed = 0;
 for (const session of found) {
   const d = new Date(session.startedAt);
   const dest = join(
@@ -62,11 +64,6 @@ for (const session of found) {
     String(d.getUTCDate()).padStart(2, "0"),
     basename(session.rolloutPath),
   );
-  if (await pathExists(dest)) {
-    console.log(`skip (already present): ${session.threadId}`);
-    skipped++;
-    continue;
-  }
   const label =
     session.kind === "sub_agent"
       ? ` [sub-agent ${session.subAgentName ?? "?"} of ${session.parentConversationId ?? "?"}]`
@@ -78,23 +75,36 @@ for (const session of found) {
   await mkdir(join(dest, ".."), { recursive: true });
   // Omnigent runs bridged Codex through its own provider, which plain Codex does
   // not have configured and so refuses to resume. Copy with that provider
-  // retargeted; the source rollout is left untouched.
-  await writeFile(
-    dest,
-    retargetOmnigentProvider(
-      await readFile(session.rolloutPath, "utf8"),
-      modelProvider,
-    ),
-  );
-  const result = await backfillCodexThreadIndex({
-    homeDir: join(codexHome, ".."),
-    threadId: session.threadId,
-    rolloutPath: dest,
-    cwd: session.cwd,
-  });
-  console.log(`  indexed: ${JSON.stringify(result)}`);
-  copied++;
+  // retargeted; the source rollout is left untouched. An existing destination
+  // is left as is but still re-indexed, so a copy whose index step failed
+  // earlier is repaired by simply running again.
+  if (await pathExists(dest)) {
+    existing++;
+  } else {
+    await writeFileAtomic(
+      dest,
+      retargetOmnigentProvider(
+        await readFile(session.rolloutPath, "utf8"),
+        modelProvider,
+      ),
+    );
+    copied++;
+  }
+  try {
+    const result = await backfillCodexThreadIndex({
+      homeDir: join(codexHome, ".."),
+      threadId: session.threadId,
+      rolloutPath: dest,
+      cwd: session.cwd,
+    });
+    console.log(`  indexed: ${JSON.stringify(result)}`);
+    if (!result.indexed) failed++;
+  } catch (error) {
+    console.error(`  not indexed: ${session.threadId}: ${String(error)}`);
+    failed++;
+  }
 }
 console.log(
-  `${found.length} rollouts found, ${copied} synced, ${skipped} skipped${apply ? "" : " (dry run)"}`,
+  `${found.length} rollouts found, ${copied} synced, ${existing} already present, ${failed} not indexed${apply ? "" : " (dry run)"}`,
 );
+if (failed > 0) process.exit(1);

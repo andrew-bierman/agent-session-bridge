@@ -21,7 +21,10 @@ import {
   threadRows,
 } from "./support/codex.js";
 import { textOf } from "./support/history.js";
-import { describeInContainer, saveArtifacts } from "./support/in-container.js";
+import {
+  describeToolInContainer,
+  saveArtifacts,
+} from "./support/in-container.js";
 import { ScriptedMock } from "./support/mock.js";
 import { createPiSandbox, runPi, type PiSandbox } from "./support/pi.js";
 
@@ -50,7 +53,8 @@ function sessionFiles(root: string): string[] {
   return out.sort();
 }
 
-describeInContainer(
+describeToolInContainer(
+  "pi",
   "real Pi against the mock, round-tripped through the bridge",
   () => {
     beforeAll(async () => {
