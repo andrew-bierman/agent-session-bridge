@@ -63,6 +63,9 @@ interface ConversationRow {
   sub_agent_name: string | null;
 }
 
+// Deliberately a lean, separate query from `listOmnigentConversations`: it reads
+// only the columns linking needs, so a chat.db that lacks or renames the others
+// still links sessions to their parents.
 async function readConversations(
   dataDir: string,
 ): Promise<Map<string, ConversationRow>> {
