@@ -16,7 +16,9 @@ export const describeInContainer: typeof describe = inContainer
 const skipDir = process.env.ASB_SKIP_DIR ?? "/opt/asb/skips";
 
 /** Reason an optional tool is unavailable in this image, or null when it is. */
-export function skipReason(tool: "opencode" | "pi"): string | null {
+export function skipReason(
+  tool: "opencode" | "opencodeV2" | "pi",
+): string | null {
   const file = join(skipDir, `${tool}.txt`);
   return existsSync(file) ? readFileSync(file, "utf8").trim() : null;
 }
@@ -27,7 +29,7 @@ export function skipReason(tool: "opencode" | "pi"): string | null {
  * failing on a missing binary.
  */
 export function describeToolInContainer(
-  tool: "opencode" | "pi",
+  tool: "opencode" | "opencodeV2" | "pi",
   name: string,
   fn: () => void,
 ): void {

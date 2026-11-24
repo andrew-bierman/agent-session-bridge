@@ -8,6 +8,7 @@ ARG OMNIGENT_VERSION
 ARG CODEX_VERSION
 ARG CLAUDE_CODE_VERSION
 ARG OPENCODE_VERSION
+ARG OPENCODE_V2_VERSION
 ARG PI_VERSION
 ARG PYTHON_VERSION
 
@@ -48,6 +49,13 @@ RUN set -x; \
         | tar -xz -C /usr/local/bin opencode \
       && chmod +x /usr/local/bin/opencode ) \
     || echo "opencode ${OPENCODE_VERSION} failed to install" > /opt/asb/skips/opencode.txt
+RUN set -x; \
+    ( mkdir -p /opt/opencode2 \
+      && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_V2_VERSION}/opencode-linux-x64.tar.gz" \
+        | tar -xz -C /opt/opencode2 \
+      && chmod +x /opt/opencode2/opencode \
+      && ln -s /opt/opencode2/opencode /usr/local/bin/opencode2 ) \
+    || echo "opencode ${OPENCODE_V2_VERSION} failed to install" > /opt/asb/skips/opencodeV2.txt
 RUN set -x; \
     ( mkdir -p /opt/pi \
       && cd /opt/pi \
