@@ -876,7 +876,7 @@ const metaPrefixes = [
   "<apps_instructions>",
   "<skills_instructions>",
   "<plugins_instructions>",
-  "# AGENTS.md instructions for ",
+  "# AGENTS.md instructions",
   "<environment_context>",
   "<turn_aborted>",
   "When you write or edit a git commit message, ensure the message ends with this trailer exactly once:",

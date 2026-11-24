@@ -476,6 +476,71 @@ describe("runtime sync flows", () => {
     ).toBe(true);
   });
 
+  it("backfills Codex thread metadata from the rollout instead of defaults", async () => {
+    const { homeDir, projectDir } = await makeTempWorkspace();
+    const codexDir = join(homeDir, ".codex");
+    const stateDbPath = join(codexDir, "state_5.sqlite");
+    const rolloutPath = join(codexDir, "sessions", "rollout-x.jsonl");
+    await mkdir(join(codexDir, "sessions"), { recursive: true });
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL, model_provider TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, sandbox_policy TEXT NOT NULL, approval_mode TEXT NOT NULL, tokens_used INTEGER NOT NULL DEFAULT 0, has_user_event INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, cli_version TEXT NOT NULL DEFAULT '', first_user_message TEXT NOT NULL DEFAULT '', memory_mode TEXT NOT NULL DEFAULT 'enabled', model TEXT, reasoning_effort TEXT);`,
+    ]);
+    const lines = [
+      {
+        timestamp: "2026-04-05T10:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "11111111-1111-7111-8111-111111111111",
+          timestamp: "2026-04-05T10:00:00.000Z",
+          cwd: projectDir,
+          cli_version: "0.171.0",
+          source: "cli",
+          model_provider: "openai",
+        },
+      },
+      {
+        timestamp: "2026-04-05T10:00:01.000Z",
+        type: "turn_context",
+        payload: {
+          model: "gpt-6",
+          approval_policy: "on-request",
+          effort: "high",
+        },
+      },
+      {
+        timestamp: "2026-04-05T10:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Hello there" }],
+        },
+      },
+    ];
+    await writeFile(
+      rolloutPath,
+      `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+    );
+
+    await backfillCodexThreadIndex({
+      homeDir,
+      threadId: "11111111-1111-7111-8111-111111111111",
+      rolloutPath,
+      cwd: projectDir,
+    });
+
+    const row = execFileSync(
+      "sqlite3",
+      [
+        stateDbPath,
+        "select cli_version, source, model, approval_mode, reasoning_effort from threads;",
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    expect(row).toBe("0.171.0|cli|gpt-6|on-request|high");
+  });
+
   it("backfills a missing Codex thread row for an existing mirrored rollout", async () => {
     const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
     const piSessionPath = join(
@@ -538,6 +603,19 @@ CREATE TABLE threads (
       false,
     );
 
+    // Newer Codex builds add these columns; the picker hides rows without a preview.
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+ALTER TABLE threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN thread_source TEXT;
+ALTER TABLE threads ADD COLUMN created_at_ms INTEGER;
+ALTER TABLE threads ADD COLUMN updated_at_ms INTEGER;
+ALTER TABLE threads ADD COLUMN recency_at INTEGER;
+ALTER TABLE threads ADD COLUMN recency_at_ms INTEGER;
+      `,
+    ]);
+
     const backfilled = await backfillCodexThreadIndex({
       homeDir,
       threadId: codexMirror.nativeId,
@@ -560,6 +638,16 @@ CREATE TABLE threads (
     expect(indexedRow).toContain(codexMirror.nativeId);
     expect(indexedRow).toContain(projectDir);
     expect(indexedRow).toContain("Fix auth");
+
+    const pickerRow = execFileSync("sqlite3", [
+      stateDbPath,
+      `select preview || '|' || thread_source || '|' || (updated_at_ms > 0) from threads where id='${codexMirror.nativeId}';`,
+    ])
+      .toString()
+      .trim();
+
+    expect(pickerRow).toContain("Fix auth");
+    expect(pickerRow).toMatch(/\|user\|1$/);
   });
 
   it("anchors later Pi imports to the current Claude transcript head", async () => {

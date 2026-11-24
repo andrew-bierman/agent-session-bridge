@@ -346,6 +346,51 @@ function buildSqlAssignment(
   };
 }
 
+type CodexRolloutMeta = {
+  cliVersion?: string;
+  source?: string;
+  modelProvider?: string;
+  model?: string;
+  approvalPolicy?: string;
+  reasoningEffort?: string;
+};
+
+// Best-effort read of the rollout's own metadata so backfilled rows reflect
+// the session that produced it instead of hardcoded defaults.
+async function readCodexRolloutMeta(
+  rolloutPath: string,
+): Promise<CodexRolloutMeta> {
+  const meta: CodexRolloutMeta = {};
+  try {
+    const text = await readFile(rolloutPath, "utf8");
+    for (const line of text.split("\n").slice(0, 200)) {
+      if (!line.trim()) continue;
+      let entry: { type?: string; payload?: Record<string, unknown> };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const payload = entry.payload ?? {};
+      const str = (v: unknown) =>
+        typeof v === "string" && v.length > 0 ? v : undefined;
+      if (entry.type === "session_meta") {
+        meta.cliVersion ??= str(payload.cli_version);
+        meta.source ??= str(payload.source);
+        meta.modelProvider ??= str(payload.model_provider);
+      } else if (entry.type === "turn_context") {
+        meta.model ??= str(payload.model);
+        meta.approvalPolicy ??= str(payload.approval_policy);
+        meta.reasoningEffort ??= str(payload.effort);
+      }
+      if (meta.cliVersion && meta.model && meta.approvalPolicy) break;
+    }
+  } catch {
+    // Rollout unreadable: fall back to defaults.
+  }
+  return meta;
+}
+
 async function upsertCodexThreadIndex(params: {
   homeDir: string;
   threadId: string;
@@ -366,6 +411,7 @@ async function upsertCodexThreadIndex(params: {
     return;
   }
 
+  const rollout = await readCodexRolloutMeta(params.rolloutPath);
   const createdAtSeconds = Math.floor(Date.parse(params.createdAt) / 1000);
   const updatedAtSeconds = Math.floor(Date.parse(params.updatedAt) / 1000);
   const requestedAssignments = [
@@ -373,23 +419,30 @@ async function upsertCodexThreadIndex(params: {
     buildSqlAssignment("rollout_path", params.rolloutPath),
     buildSqlAssignment("created_at", createdAtSeconds),
     buildSqlAssignment("updated_at", updatedAtSeconds),
-    buildSqlAssignment("source", "vscode"),
-    buildSqlAssignment("model_provider", "openai"),
+    buildSqlAssignment("source", rollout.source ?? "vscode"),
+    buildSqlAssignment("model_provider", rollout.modelProvider ?? "openai"),
     buildSqlAssignment("cwd", params.cwd),
     buildSqlAssignment("title", params.title),
     buildSqlAssignment("sandbox_policy", "workspace-write"),
-    buildSqlAssignment("approval_mode", "never"),
+    buildSqlAssignment("approval_mode", rollout.approvalPolicy ?? "never"),
     buildSqlAssignment("tokens_used", 0),
     buildSqlAssignment(
       "has_user_event",
       params.firstUserMessage.length > 0 ? 1 : 0,
     ),
     buildSqlAssignment("archived", 0),
-    buildSqlAssignment("cli_version", "0.115.0"),
+    buildSqlAssignment("cli_version", rollout.cliVersion ?? "0.115.0"),
     buildSqlAssignment("first_user_message", params.firstUserMessage),
     buildSqlAssignment("memory_mode", "enabled"),
-    buildSqlAssignment("model", "gpt-5.4"),
-    buildSqlAssignment("reasoning_effort", "medium"),
+    buildSqlAssignment("model", rollout.model ?? "gpt-5.4"),
+    buildSqlAssignment("reasoning_effort", rollout.reasoningEffort ?? "medium"),
+    // Codex's resume picker skips rows with an empty preview.
+    buildSqlAssignment("preview", params.firstUserMessage),
+    buildSqlAssignment("thread_source", "user"),
+    buildSqlAssignment("created_at_ms", createdAtSeconds * 1000),
+    buildSqlAssignment("updated_at_ms", updatedAtSeconds * 1000),
+    buildSqlAssignment("recency_at", updatedAtSeconds),
+    buildSqlAssignment("recency_at_ms", updatedAtSeconds * 1000),
   ].filter((assignment) => availableColumns.has(assignment.column));
 
   const insertColumns = requestedAssignments.map(
