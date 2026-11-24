@@ -473,7 +473,11 @@ ON CONFLICT(id) DO UPDATE SET
 `;
 
   try {
-    await execFile("sqlite3", [dbPath, sql]);
+    // Feed the statement on stdin: long first messages are written into the
+    // SQL several times and would exceed the per-argument limit (~128KB).
+    const run = execFile("sqlite3", [dbPath]);
+    run.child.stdin?.end(sql);
+    await run;
   } catch {
     // Resume-by-id still works from the rollout scan fallback even when the
     // local thread index is unavailable.

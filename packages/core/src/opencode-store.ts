@@ -106,8 +106,7 @@ export function verifyOpenCodeSeedRows(
     id: string;
     time: { created: number };
   } & (
-    | { type: "user"; text: string }
-    | { type: "assistant"; content: unknown }
+    { type: "user"; text: string } | { type: "assistant"; content: unknown }
   ))[],
 ): boolean {
   checkVersion(version);

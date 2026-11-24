@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
+  readFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -193,5 +195,37 @@ describe("omnigent-codex-sync", () => {
     const r = run();
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("0 rollouts found");
+  });
+
+  it("never overwrites a rollout that already exists in the native home", () => {
+    writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, validLines(THREAD));
+    const nativeDir = join(codexHome, "sessions", "2026", "11", "23");
+    mkdirSync(nativeDir, { recursive: true });
+    const existing = join(nativeDir, `rollout-x-${THREAD}.jsonl`);
+    writeFileSync(existing, "user-owned content\n");
+    const r = run("--apply");
+    expect(r.status).toBe(0);
+    expect(readFileSync(existing, "utf8")).toBe("user-owned content\n");
+    expect(r.stdout).toContain("0 synced");
+  });
+
+  it("syncs a session that never got a user message", () => {
+    const lines = validLines(THREAD).slice(0, 2);
+    writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, lines);
+    const r = run("--apply");
+    expect(r.status).toBe(0);
+    expect(rows()).toBe(`${THREAD}|0.171.0|gpt-6|`);
+  });
+
+  it("fails without writing anything when the native home does not exist", () => {
+    writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, validLines(THREAD));
+    const missing = join(root, "nowhere", ".codex");
+    const r = spawnSync(
+      "bun",
+      [script, "--omnigent-data", omnigent, "--codex-home", missing, "--apply"],
+      { encoding: "utf8" },
+    );
+    expect(r.status).not.toBe(0);
+    expect(existsSync(missing)).toBe(false);
   });
 });
