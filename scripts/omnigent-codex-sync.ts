@@ -5,6 +5,12 @@
 // Usage:
 //   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply]
 //
+// Omnigent keeps each Codex session's private CODEX_HOME at
+// <data dir>/codex-native/<hash>/codex-home. The data dir is ~/.omnigent, or
+// $OMNIGENT_DATA_DIR when set (this script honors both). Omnigent prunes an
+// inactive bridge dir 7 days after its last activity, so run this at least
+// weekly (it is idempotent) or the native copy is lost with the private home.
+//
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
 // Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
 import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
