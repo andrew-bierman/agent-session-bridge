@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -11,6 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { Terminal, shellQuote } from "./terminal.js";
 
 /** An isolated Omnigent: its own HOME, data directory, working dir and agent. */
 export interface OmnigentSandbox {
@@ -66,7 +67,6 @@ export function createOmnigentSandbox(
       HOME: homeDir,
       TMPDIR: process.env.TMPDIR ?? tmpdir(),
       OMNIGENT_DATA_DIR: dataDir,
-      TMUX_TMPDIR: join(root, "tmux"),
       OPENAI_API_KEY: "sk-aimock-omnigent",
       OPENAI_BASE_URL: urls.openaiBaseUrl,
       ANTHROPIC_API_KEY: "sk-aimock-omnigent",
@@ -78,53 +78,20 @@ export function createOmnigentSandbox(
   };
 }
 
-const tmux = (sandbox: OmnigentSandbox, ...args: string[]): string => {
-  mkdirSync(sandbox.env.TMUX_TMPDIR!, { recursive: true });
-  try {
-    return execFileSync("tmux", args, {
-      env: sandbox.env,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (error) {
-    return String((error as { stdout?: string }).stdout ?? "");
-  }
-};
+const terminalFor = (sandbox: OmnigentSandbox): Terminal =>
+  Terminal.in(sandbox.root, sandbox.env, sandbox.project, sandbox.session);
 
 /**
  * Start `omni <args>` in a detached terminal, since Omnigent's REPL needs a
  * TTY. The terminal stays open after the command exits so its screen can be
- * read.
+ * read; it shows `TERMINAL_EXITED` once `omni` is done.
  */
 export function startOmnigent(sandbox: OmnigentSandbox, args: string[]): void {
-  const quoted = args.map((a) => `'${a.replaceAll("'", `'\\''`)}'`).join(" ");
-  tmux(
-    sandbox,
-    "new-session",
-    "-d",
-    "-s",
-    sandbox.session,
-    "-x",
-    "200",
-    "-y",
-    "50",
-    "-c",
-    sandbox.project,
-    `omni ${quoted}; echo OMNI_EXITED; sleep 600`,
-  );
+  terminalFor(sandbox).start(`omni ${args.map(shellQuote).join(" ")}`);
 }
 
-export function screen(sandbox: OmnigentSandbox): string {
-  return tmux(
-    sandbox,
-    "capture-pane",
-    "-p",
-    "-t",
-    sandbox.session,
-    "-S",
-    "-200",
-  );
-}
+export const screen = (sandbox: OmnigentSandbox): string =>
+  terminalFor(sandbox).screen();
 
 export async function waitFor(
   what: string,
@@ -139,19 +106,6 @@ export async function waitFor(
   }
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${what}`);
 }
-
-export function chatDbPath(sandbox: OmnigentSandbox): string {
-  return join(sandbox.dataDir, "chat.db");
-}
-
-export function writeJson(path: string, value: unknown): void {
-  writeFileSync(path, JSON.stringify(value, null, 2));
-}
-
-export const hasChatDb = (sandbox: OmnigentSandbox): boolean =>
-  existsSync(chatDbPath(sandbox));
-
-export const readText = (path: string): string => readFileSync(path, "utf8");
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 
@@ -193,11 +147,7 @@ export const runCodexSync = (sandbox: OmnigentSandbox, args: string[]) =>
 
 /** Stop the sandbox's terminal. Container-local; nothing on the host is touched. */
 export function stopTerminal(sandbox: OmnigentSandbox): void {
-  tmux(sandbox, "kill-session", "-t", sandbox.session);
-}
-
-export function sendKeys(sandbox: OmnigentSandbox, ...keys: string[]): void {
-  tmux(sandbox, "send-keys", "-t", sandbox.session, ...keys);
+  terminalFor(sandbox).kill();
 }
 
 /**

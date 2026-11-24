@@ -144,7 +144,7 @@ describeInContainer(
       startOmnigent(omni, ["run", omni.agentDir, "-p", QUESTION]);
       await waitFor(
         "Omnigent to finish the delegated run",
-        () => screen(omni).includes("OMNI_EXITED"),
+        () => screen(omni).includes("TERMINAL_EXITED"),
         240_000,
       );
       const conversations = await listOmnigentConversations(omni.dataDir);

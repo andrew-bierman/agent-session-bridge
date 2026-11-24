@@ -14,5 +14,8 @@ describeInContainer("OpenCode round trip", () => {
     expect(versions.opencode).toMatch(/^1\./);
   });
 
-  it.skip("round-trips a real OpenCode session through the bridge (skipped: image pins OpenCode 1.x, bridge reads the v2 export)", () => {});
+  it.todo(
+    "round-trips a real OpenCode session through the bridge (skipped: image pins OpenCode 1.x, bridge reads the v2 export)",
+    () => {},
+  );
 });
