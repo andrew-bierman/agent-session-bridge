@@ -34,6 +34,16 @@ describeInContainer("pinned harness versions", () => {
     );
   }
 
+  {
+    const reason = skipReason("opencodeV2");
+    (reason ? it.skip : it)(
+      `has the pinned OpenCode 2.x installed${reason ? ` (skipped: ${reason})` : ""}`,
+      () => {
+        expect(run("opencode2", ["--version"])).toContain(versions.opencodeV2);
+      },
+    );
+  }
+
   it("has sqlite3 and tmux for the scenarios", () => {
     expect(run("sqlite3", ["--version"])).toMatch(/^3\./);
     expect(run("tmux", ["-V"])).toMatch(/^tmux /);

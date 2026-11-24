@@ -1,11 +1,11 @@
 # Container integration tier
 
-Real Omnigent, Codex, Claude Code and Pi run inside one offline container with
+Real Omnigent, Codex, Claude Code, OpenCode and Pi run inside one offline container with
 only the model responses scripted. The tests prove what the bridge exports: that
 native Codex and Claude Code sessions exported from Omnigent (including
 spec-defined sub-agents that exist only in its `chat.db`) load, resume, and
 replay their history; that Omnigent's own native Codex bridge syncs and resumes;
-and that a real Pi session round-trips into Codex and Claude Code.
+that a real Pi session round-trips into Codex and Claude Code; and that a real OpenCode session exports into both, while a Codex session seeded into OpenCode resumes there with its history.
 
 ```bash
 bun run containers:build   # build the image (needs podman or docker)
@@ -40,5 +40,12 @@ Output (JUnit and the artifacts of each scenario) lands in
   to start the interactive client like a logged-in user's.
 - Omnigent bridges Codex through its own `omnigent_provider`; the sync script
   retargets that provider (default `openai`) so plain Codex can resume the copy.
-- OpenCode is a guarded skip: the bridge reads the OpenCode v2 export while the
-  image pins OpenCode 1.x, which Omnigent requires.
+- OpenCode needs two installs. The bridge reads and seeds the OpenCode 2.3
+  database, but Omnigent supports OpenCode below 2.1 only, so the image carries
+  1.x (`opencode`, for Omnigent) and 2.3.2 (`opencode2`, for the OpenCode
+  tests). The bridge CLI runs `opencode` from `PATH`, so the seed test puts the
+  2.x binary first. The built-in `openai` provider takes a `baseURL`, which is
+  how it reaches the mock; `session export --standalone` is the export command.
+- A settled OpenCode tool call reaches Codex and Claude Code as a labeled text
+  record (call id, command, real output), not a replayable tool call. Real
+  OpenCode names its command tool `shell`.
