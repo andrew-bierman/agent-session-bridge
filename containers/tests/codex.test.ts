@@ -23,6 +23,7 @@ import {
   echoConversation,
 } from "./support/conversation.js";
 import { describeInContainer, saveArtifacts } from "./support/in-container.js";
+import { historyOf, locateHistory } from "./support/history.js";
 import { ScriptedMock } from "./support/mock.js";
 
 const THREAD = "01a20bd7-c82b-7000-b619-d10335d3ce3e";
@@ -43,25 +44,6 @@ function keysByKind(lines: RolloutLine[]): Map<string, Set<string>> {
   }
   return out;
 }
-
-interface HistoryMessage {
-  role: string;
-  content?: unknown;
-  tool_call_id?: string;
-  tool_calls?: { id: string; function?: { name?: string } }[];
-}
-
-/**
- * The conversation history a journaled request carried. aimock journals every
- * wire, including Codex's WebSocket turns, in its normalized chat form.
- */
-function historyOf(body: unknown): HistoryMessage[] {
-  const messages = (body as { messages?: unknown } | null)?.messages;
-  return Array.isArray(messages) ? (messages as HistoryMessage[]) : [];
-}
-
-const textOf = (message: HistoryMessage) =>
-  JSON.stringify(message.content ?? "");
 
 /** A fresh Codex whose thread database exists, as a real user's does. */
 async function warmSandbox(label: string): Promise<CodexSandbox> {
@@ -235,35 +217,17 @@ describeInContainer("real Codex against the mock", () => {
     expect(mock.unmatchedSummary()).toEqual([]);
 
     const [request] = mock.requestsContaining("follow-up question");
-    const history = historyOf(request!.body);
-    const user = history.findIndex(
-      (m) => m.role === "user" && textOf(m).includes(PROMPT),
-    );
-    const call = history.findIndex((m) =>
-      m.tool_calls?.some(
-        (c) =>
-          c.id === "call_exported_1" && c.function?.name === "exec_command",
-      ),
-    );
-    const output = history.findIndex(
-      (m) =>
-        m.role === "tool" &&
-        m.tool_call_id === "call_exported_1" &&
-        textOf(m).includes("hello-from-codex"),
-    );
-    const final = history.findIndex(
-      (m) => m.role === "assistant" && textOf(m).includes(FINAL),
-    );
-    const followUp = history.findIndex(
-      (m) => m.role === "user" && textOf(m).includes("follow-up question"),
-    );
+    const positions = locateHistory(historyOf(request!.body), {
+      prompt: PROMPT,
+      callId: "call_exported_1",
+      toolName: "exec_command",
+      toolOutput: "hello-from-codex",
+      final: FINAL,
+      followUp: "follow-up question",
+    });
     // Every exported message reached the model, in order, ahead of the new turn.
-    for (const index of [user, call, output, final, followUp]) {
-      expect(index).toBeGreaterThanOrEqual(0);
-    }
-    expect([user, call, output, final, followUp]).toEqual(
-      [user, call, output, final, followUp].sort((a, b) => a - b),
-    );
+    for (const index of positions) expect(index).toBeGreaterThanOrEqual(0);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
     saveArtifacts("codex-resumed", sandbox.codexHome);
   }, 240_000);
 
