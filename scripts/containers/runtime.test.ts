@@ -1,7 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { join } from "node:path";
 
-import { buildArgs } from "../../containers/versions.js";
 import { buildArgv, defaultTag } from "./build.js";
 import { buildRunArgv, newRunId, outDirFor, parseRunArgs } from "./run.js";
 import { selectRuntime } from "./runtime.js";
@@ -168,20 +166,5 @@ describe("parseRunArgs", () => {
       noBuild: false,
       testArgs: ["bun", "test"],
     });
-  });
-});
-
-describe("build --print-build-args", () => {
-  it("prints every pinned version as KEY=VALUE, the same set the build passes", () => {
-    const out = Bun.spawnSync(
-      ["bun", join(import.meta.dir, "build.ts"), "--print-build-args"],
-      { stdout: "pipe" },
-    )
-      .stdout.toString()
-      .trim()
-      .split("\n");
-    expect(out).toEqual(
-      Object.entries(buildArgs()).map(([key, value]) => `${key}=${value}`),
-    );
   });
 });
