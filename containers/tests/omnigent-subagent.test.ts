@@ -21,12 +21,12 @@ import {
   execArgs,
   findRollouts,
   readRollout,
-  resumeArgs as codexResumeArgs,
+  resumeInTui,
   runCodex,
   threadRows,
   type CodexSandbox,
 } from "./support/codex.js";
-import { historyOf, textOf } from "./support/history.js";
+import { textOf, type HistoryMessage } from "./support/history.js";
 import { describeInContainer, saveArtifacts } from "./support/in-container.js";
 import { ScriptedMock } from "./support/mock.js";
 import {
@@ -62,7 +62,7 @@ async function warmCodex(label: string): Promise<CodexSandbox> {
 }
 
 const index = (
-  history: ReturnType<typeof historyOf>,
+  history: HistoryMessage[],
   test: (m: (typeof history)[number]) => boolean,
 ) => history.findIndex(test);
 
@@ -237,15 +237,10 @@ describeInContainer(
         },
       ]);
       mock.clearRequests();
-      const resumed = await runCodex(
-        target,
-        codexResumeArgs(id, "follow-up question"),
-      );
-      expect(resumed.code).toBe(0);
-      expect(resumed.stdout).toContain("Follow-up answer.");
-      const history = historyOf(
-        mock.requestsContaining("follow-up question")[0]!.body,
-      );
+      const resumed = await resumeInTui(target, mock, id, "follow-up question");
+      expect(resumed.reached).toBe(true);
+      expect(resumed.screen).toContain("Follow-up answer.");
+      const history = mock.historyForUserText("follow-up question")!;
       const asked = index(
         history,
         (m) => m.role === "user" && textOf(m).includes(QUESTION),
@@ -300,9 +295,7 @@ describeInContainer(
       );
       expect(resumed.code).toBe(0);
       expect(resumed.stdout).toContain("Claude follow-up answer.");
-      const history = historyOf(
-        mock.requestsContaining("claude follow-up")[0]!.body,
-      );
+      const history = mock.historyForUserText("claude follow-up")!;
       const asked = index(
         history,
         (m) => m.role === "user" && textOf(m).includes(QUESTION),
@@ -338,14 +331,9 @@ describeInContainer(
         },
       ]);
       mock.clearRequests();
-      const resumed = await runCodex(
-        target,
-        codexResumeArgs(id, "parent follow-up"),
-      );
-      expect(resumed.code).toBe(0);
-      const history = historyOf(
-        mock.requestsContaining("parent follow-up")[0]!.body,
-      );
+      const resumed = await resumeInTui(target, mock, id, "parent follow-up");
+      expect(resumed.reached).toBe(true);
+      const history = mock.historyForUserText("parent follow-up")!;
       const callOf = (name: string) =>
         history.findIndex((m) =>
           m.tool_calls?.some((c) => c.function?.name === name),

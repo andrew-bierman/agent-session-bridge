@@ -155,19 +155,14 @@ export const readText = (path: string): string => readFileSync(path, "utf8");
 
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 
-/** Run `scripts/omnigent-chat-export.ts` against a sandbox's chat.db. */
-export async function runExporter(
+/** Run one of the repo's scripts against a sandbox's Omnigent data directory. */
+async function runScript(
   sandbox: OmnigentSandbox,
+  script: string,
   args: string[],
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const child = Bun.spawn(
-    [
-      "bun",
-      "scripts/omnigent-chat-export.ts",
-      "--omnigent-data",
-      sandbox.dataDir,
-      ...args,
-    ],
+    ["bun", script, "--omnigent-data", sandbox.dataDir, ...args],
     {
       cwd: repoRoot,
       env: {
@@ -186,6 +181,53 @@ export async function runExporter(
     child.exited,
   ]);
   return { code, stdout, stderr };
+}
+
+/** Run `scripts/omnigent-chat-export.ts` against a sandbox's chat.db. */
+export const runExporter = (sandbox: OmnigentSandbox, args: string[]) =>
+  runScript(sandbox, "scripts/omnigent-chat-export.ts", args);
+
+/** Run `scripts/omnigent-codex-sync.ts` against a sandbox's native bridges. */
+export const runCodexSync = (sandbox: OmnigentSandbox, args: string[]) =>
+  runScript(sandbox, "scripts/omnigent-codex-sync.ts", args);
+
+/** Stop the sandbox's terminal. Container-local; nothing on the host is touched. */
+export function stopTerminal(sandbox: OmnigentSandbox): void {
+  tmux(sandbox, "kill-session", "-t", sandbox.session);
+}
+
+export function sendKeys(sandbox: OmnigentSandbox, ...keys: string[]): void {
+  tmux(sandbox, "send-keys", "-t", sandbox.session, ...keys);
+}
+
+/**
+ * Give the sandbox's Omnigent a user-level Codex home, the way a user who has
+ * logged in has one: Omnigent copies this config into each bridged session's
+ * private CODEX_HOME and checks `auth.json` for a credential.
+ */
+export function installUserCodexHome(
+  sandbox: OmnigentSandbox,
+  openaiBaseUrl: string,
+  model: string,
+): void {
+  const codexHome = join(sandbox.homeDir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    [
+      `model = "${model}"`,
+      `openai_base_url = "${openaiBaseUrl}"`,
+      // The container is the sandbox; Codex's own (bubblewrap) needs user
+      // namespaces the container does not grant.
+      `sandbox_mode = "danger-full-access"`,
+      `approval_policy = "never"`,
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(codexHome, "auth.json"),
+    JSON.stringify({ OPENAI_API_KEY: "sk-aimock-omnigent" }),
+  );
 }
 
 /** Files under `root` whose text contains `needle`, skipping chat.db and sqlite files. */

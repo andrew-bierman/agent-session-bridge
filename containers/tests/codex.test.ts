@@ -10,7 +10,7 @@ import {
   execArgs,
   findRollouts,
   readRollout,
-  resumeArgs,
+  resumeInTui,
   runCodex,
   threadRows,
   type CodexSandbox,
@@ -23,7 +23,7 @@ import {
   echoConversation,
 } from "./support/conversation.js";
 import { describeInContainer, saveArtifacts } from "./support/in-container.js";
-import { historyOf, locateHistory } from "./support/history.js";
+import { locateHistory } from "./support/history.js";
 import { ScriptedMock } from "./support/mock.js";
 
 const THREAD = "01a20bd7-c82b-7000-b619-d10335d3ce3e";
@@ -207,24 +207,27 @@ describeInContainer("real Codex against the mock", () => {
 
     mock.reply("follow-up question", "Follow-up answer.");
     mock.clearRequests();
-    const resumed = await runCodex(
+    const resumed = await resumeInTui(
       sandbox,
-      resumeArgs(THREAD, "follow-up question"),
+      mock,
+      THREAD,
+      "follow-up question",
     );
-    if (resumed.code !== 0) console.error(resumed.stdout, resumed.stderr);
-    expect(resumed.code).toBe(0);
-    expect(resumed.stdout).toContain("Follow-up answer.");
+    expect(resumed.reached).toBe(true);
+    expect(resumed.screen).toContain("Follow-up answer.");
     expect(mock.unmatchedSummary()).toEqual([]);
 
-    const [request] = mock.requestsContaining("follow-up question");
-    const positions = locateHistory(historyOf(request!.body), {
-      prompt: PROMPT,
-      callId: "call_exported_1",
-      toolName: "exec_command",
-      toolOutput: "hello-from-codex",
-      final: FINAL,
-      followUp: "follow-up question",
-    });
+    const positions = locateHistory(
+      mock.historyForUserText("follow-up question")!,
+      {
+        prompt: PROMPT,
+        callId: "call_exported_1",
+        toolName: "exec_command",
+        toolOutput: "hello-from-codex",
+        final: FINAL,
+        followUp: "follow-up question",
+      },
+    );
     // Every exported message reached the model, in order, ahead of the new turn.
     for (const index of positions) expect(index).toBeGreaterThanOrEqual(0);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -254,12 +257,27 @@ describeInContainer("real Codex against the mock", () => {
     expect(String(row?.preview)).toContain(marker);
 
     mock.reply("big follow-up", "Big follow-up answer.");
-    const resumed = await runCodex(
+    const resumed = await resumeInTui(
       sandbox,
-      resumeArgs(BIG_THREAD, "big follow-up"),
+      mock,
+      BIG_THREAD,
+      "big follow-up",
     );
-    expect(resumed.code).toBe(0);
-    expect(resumed.stdout).toContain("Big follow-up answer.");
+    expect(resumed.reached).toBe(true);
+    expect(resumed.screen).toContain("Big follow-up answer.");
+    // The exporter kept both ends of the 300KB message in the rollout it wrote.
+    const rollout = await Bun.file(result.rolloutPath).text();
+    expect(rollout).toContain(marker);
+    expect(rollout).toContain("BIGEND");
+
+    // aimock journals a body this large only as its original size, so that size
+    // proves Codex sent the whole message on resume rather than cutting it.
+    const sent = mock
+      .requests()
+      .map((entry) => entry.body as { originalByteSize?: number } | null)
+      .filter((body) => body && "__aimock_truncated" in body)
+      .map((body) => body!.originalByteSize ?? 0);
+    expect(Math.max(0, ...sent)).toBeGreaterThan(300_000);
   }, 240_000);
 
   it("re-exporting leaves one thread row and an unchanged rollout", async () => {

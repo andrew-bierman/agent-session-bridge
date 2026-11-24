@@ -4,6 +4,8 @@ import {
   type JournalEntry,
 } from "@copilotkit/aimock";
 
+import { historyOf, textOf, type HistoryMessage } from "./history.js";
+
 /**
  * A scripted model for the container tier. Only model responses are faked; the
  * harnesses are real. One server speaks OpenAI Responses and Anthropic
@@ -42,6 +44,11 @@ export class ScriptedMock {
           !req.messages.some((m) => m.role === "user" || m.role === "tool"),
       },
       response: { content: "ready" },
+    });
+    // The interactive Codex client asks for a task title on every new turn.
+    llm.addFixture({
+      match: { userMessage: "Generate a concise, single-line task title" },
+      response: { content: "Task title" },
     });
     await llm.start();
     return new ScriptedMock(llm);
@@ -108,6 +115,24 @@ export class ScriptedMock {
     return this.requests().filter((entry) =>
       JSON.stringify(entry.body ?? "").includes(text),
     );
+  }
+
+  /**
+   * The conversation history of the real turn for a user prompt: among requests
+   * whose messages include a user turn containing `text`, the one with the
+   * longest history. Interactive clients also send empty warm-up frames and
+   * title requests that merely quote the prompt, and those carry far less.
+   */
+  historyForUserText(text: string): HistoryMessage[] | undefined {
+    let best: HistoryMessage[] | undefined;
+    for (const entry of this.requests()) {
+      const history = historyOf(entry.body);
+      const mentions = history.some(
+        (m) => m.role === "user" && textOf(m).includes(text),
+      );
+      if (mentions && (!best || history.length > best.length)) best = history;
+    }
+    return best;
   }
 
   /** Requests no fixture answered. A scenario expects none. */

@@ -10,6 +10,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { ScriptedMock } from "./mock.js";
+import { Terminal, shellQuote } from "./terminal.js";
+
 /** An isolated Codex: its own CODEX_HOME, working directory and environment. */
 export interface CodexSandbox {
   root: string;
@@ -42,7 +45,18 @@ export function createCodexSandbox(openaiBaseUrl: string): CodexSandbox {
       `model = "${CODEX_MODEL}"`,
       `openai_base_url = "${openaiBaseUrl}"`,
       "",
+      // A logged-in user has already trusted their project, so the interactive
+      // client does not stop on a first-run prompt.
+      `[projects."${project}"]`,
+      `trust_level = "trusted"`,
+      "",
     ].join("\n"),
+  );
+  // An API-key login, which the interactive client requires (exec reads the
+  // environment instead).
+  writeFileSync(
+    join(codexHome, "auth.json"),
+    JSON.stringify({ OPENAI_API_KEY: "sk-aimock-codex" }),
   );
   return {
     root,
@@ -154,11 +168,53 @@ export function threadRows(
   return out ? (JSON.parse(out) as Record<string, unknown>[]) : [];
 }
 
-export const resumeArgs = (id: string, prompt: string): string[] => [
-  "exec",
-  "resume",
-  id,
-  "--json",
-  "--skip-git-repo-check",
-  prompt,
-];
+export interface TuiResume {
+  /** Whether the follow-up reached the model before the timeout. */
+  reached: boolean;
+  /** The terminal screen once the follow-up was sent. */
+  screen: string;
+}
+
+/**
+ * Resume a session the way a user does: `codex resume <id> "<prompt>"` in a
+ * terminal. (The non-interactive `codex exec resume` cannot load a thread whose
+ * turns ran a command: "list_turns is not supported yet".) When the session's
+ * recorded directory differs from the current one Codex asks which to use; the
+ * first choice, the session's directory, is accepted, as a user would.
+ */
+export async function resumeInTui(
+  sandbox: CodexSandbox,
+  mock: ScriptedMock,
+  id: string,
+  prompt: string,
+  timeoutMs = 90_000,
+): Promise<TuiResume> {
+  const terminal = Terminal.in(
+    sandbox.root,
+    sandbox.env,
+    sandbox.project,
+    `tui${Date.now().toString(36)}`,
+  );
+  terminal.start(`codex resume ${id} ${shellQuote(prompt)}`);
+  const deadline = Date.now() + timeoutMs;
+  let answeredDirectoryPrompt = false;
+  while (
+    Date.now() < deadline &&
+    mock.requestsContaining(prompt).length === 0
+  ) {
+    if (
+      !answeredDirectoryPrompt &&
+      terminal.screen().includes("Working directory")
+    ) {
+      terminal.keys("Enter");
+      answeredDirectoryPrompt = true;
+    }
+    await Bun.sleep(500);
+  }
+  const reached = mock.requestsContaining(prompt).length > 0;
+  // Give the reply time to render before reading the screen.
+  await Bun.sleep(3_000);
+  const screen = terminal.screen();
+  terminal.kill();
+  return { reached, screen };
+}

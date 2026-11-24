@@ -178,3 +178,55 @@ export async function listOmnigentCodexSessions(
 
   return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
+
+/**
+ * Provider id Omnigent gives a Codex session it bridges. Plain Codex has no such
+ * provider configured, so a rollout that still names it cannot be resumed
+ * outside Omnigent ("model provider ... is no longer configured").
+ */
+export const OMNIGENT_PROVIDER_ID = "omnigent_provider";
+
+/**
+ * Point a bridged rollout at a provider the target Codex has configured. Only
+ * the two fields that record the provider change (`session_meta` and the
+ * `thread_settings` event); every other line is returned byte for byte, and a
+ * rollout from any other provider is returned unchanged.
+ */
+export function retargetOmnigentProvider(
+  rolloutText: string,
+  provider: string,
+): string {
+  return rolloutText
+    .split("\n")
+    .map((line) => {
+      if (!line.includes(OMNIGENT_PROVIDER_ID)) return line;
+      let entry: {
+        type?: string;
+        payload?: {
+          model_provider?: string;
+          thread_settings?: { model_provider_id?: string };
+        };
+      };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        return line;
+      }
+      const payload = entry.payload;
+      if (!payload) return line;
+      let changed = false;
+      if (
+        entry.type === "session_meta" &&
+        payload.model_provider === OMNIGENT_PROVIDER_ID
+      ) {
+        payload.model_provider = provider;
+        changed = true;
+      }
+      if (payload.thread_settings?.model_provider_id === OMNIGENT_PROVIDER_ID) {
+        payload.thread_settings.model_provider_id = provider;
+        changed = true;
+      }
+      return changed ? JSON.stringify(entry) : line;
+    })
+    .join("\n");
+}

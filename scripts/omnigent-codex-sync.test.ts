@@ -191,6 +191,92 @@ describe("omnigent-codex-sync", () => {
     expect(only.stdout).not.toContain("parent-t");
   });
 
+  it("retargets an Omnigent-provider rollout to openai in the copy, and in the thread row", () => {
+    const lines = validLines(THREAD).map((l) =>
+      l.type === "session_meta"
+        ? {
+            ...l,
+            payload: { ...l.payload, model_provider: "omnigent_provider" },
+          }
+        : l,
+    );
+    const source = writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, lines);
+    const before = readFileSync(source, "utf8");
+    const r = run("--apply");
+    expect(r.status).toBe(0);
+    const copy = readFileSync(
+      join(
+        codexHome,
+        "sessions",
+        "2026",
+        "11",
+        "23",
+        `rollout-x-${THREAD}.jsonl`,
+      ),
+      "utf8",
+    );
+    expect(copy).not.toContain("omnigent_provider");
+    expect(copy).toContain('"model_provider":"openai"');
+    expect(readFileSync(source, "utf8")).toBe(before);
+    expect(
+      execFileSync(
+        "sqlite3",
+        [
+          join(codexHome, "state_5.sqlite"),
+          "select model_provider from threads;",
+        ],
+        { encoding: "utf8" },
+      ).trim(),
+    ).toBe("openai");
+  });
+
+  it("--model-provider chooses the provider the copy is retargeted to", () => {
+    const lines = validLines(THREAD).map((l) =>
+      l.type === "session_meta"
+        ? {
+            ...l,
+            payload: { ...l.payload, model_provider: "omnigent_provider" },
+          }
+        : l,
+    );
+    writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, lines);
+    run("--apply", "--model-provider", "azure");
+    const copy = readFileSync(
+      join(
+        codexHome,
+        "sessions",
+        "2026",
+        "11",
+        "23",
+        `rollout-x-${THREAD}.jsonl`,
+      ),
+      "utf8",
+    );
+    expect(copy).toContain('"model_provider":"azure"');
+  });
+
+  it("copies a rollout from another provider byte for byte", () => {
+    const source = writeRollout(
+      sessions(),
+      `rollout-x-${THREAD}.jsonl`,
+      validLines(THREAD),
+    );
+    run("--apply");
+    expect(
+      readFileSync(
+        join(
+          codexHome,
+          "sessions",
+          "2026",
+          "11",
+          "23",
+          `rollout-x-${THREAD}.jsonl`,
+        ),
+        "utf8",
+      ),
+    ).toBe(readFileSync(source, "utf8"));
+  });
+
   it("handles a missing Omnigent data dir", () => {
     const r = run();
     expect(r.status).toBe(0);

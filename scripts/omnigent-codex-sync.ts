@@ -3,7 +3,7 @@
 // the native Codex home and index them so they show up in `codex resume`.
 //
 // Usage:
-//   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply] [--sub-agents-only]
+//   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply] [--sub-agents-only] [--model-provider openai]
 //
 // Omnigent keeps each Codex session's private CODEX_HOME at
 // <data dir>/codex-native/<hash>/codex-home. The data dir is ~/.omnigent, or
@@ -11,15 +11,25 @@
 // inactive bridge dir 7 days after its last activity, so run this at least
 // weekly (it is idempotent) or the native copy is lost with the private home.
 //
+// Omnigent bridges Codex through its own `omnigent_provider`, which plain Codex
+// cannot resume; the copy is retargeted to --model-provider (default openai).
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
 // Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
-import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { backfillCodexThreadIndex } from "../packages/core/src/runtime.js";
 import {
   listOmnigentCodexSessions,
   omnigentDataDir,
+  retargetOmnigentProvider,
 } from "../packages/core/src/omnigent.js";
 
 const args = process.argv.slice(2);
@@ -33,6 +43,7 @@ const dataDir = resolve(opt("--omnigent-data", omnigentDataDir()));
 const codexHome = resolve(opt("--codex-home", join(homedir(), ".codex")));
 const apply = flag("--apply");
 const subAgentsOnly = flag("--sub-agents-only");
+const modelProvider = opt("--model-provider", "openai");
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -84,7 +95,16 @@ for (const session of found) {
   );
   if (!apply) continue;
   await mkdir(join(dest, ".."), { recursive: true });
-  await copyFile(session.rolloutPath, dest);
+  // Omnigent runs bridged Codex through its own provider, which plain Codex does
+  // not have configured and so refuses to resume. Copy with that provider
+  // retargeted; the source rollout is left untouched.
+  await writeFile(
+    dest,
+    retargetOmnigentProvider(
+      await readFile(session.rolloutPath, "utf8"),
+      modelProvider,
+    ),
+  );
   const result = await backfillCodexThreadIndex({
     homeDir: join(codexHome, ".."),
     threadId: session.threadId,
