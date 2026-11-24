@@ -154,6 +154,22 @@ describe("omnigent-chat-export", () => {
     expect(r.stdout).not.toContain(PARENT + " ");
   });
 
+  it("exits non-zero without writing when a requested conversation is not in chat.db", () => {
+    const r = run(
+      "--target",
+      "codex",
+      "--conversation",
+      "ffffffffffffffffffffffffffffffff",
+      "--apply",
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(
+      "conversation not found in chat.db: ffffffffffffffffffffffffffffffff",
+    );
+    expect(rolloutFiles()).toEqual([]);
+    expect(threads()).toBe("");
+  });
+
   it("exports all conversations when no filter is given", () => {
     const r = run("--target", "codex", "--apply");
     expect(rolloutFiles()).toHaveLength(2);

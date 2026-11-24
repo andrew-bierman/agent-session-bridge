@@ -1,4 +1,8 @@
-import { LLMock, type JournalEntry } from "@copilotkit/aimock";
+import {
+  LLMock,
+  type FixtureFileEntry,
+  type JournalEntry,
+} from "@copilotkit/aimock";
 
 /**
  * A scripted model for the container tier. Only model responses are faked; the
@@ -75,6 +79,16 @@ export class ScriptedMock {
     this.llm.onMessage(prompt, {
       toolCalls: [{ id: round.id, name: round.name, arguments: round.args }],
     });
+    return this;
+  }
+
+  /**
+   * Add fixtures in match order (first match wins). Use `systemMessage` to tell
+   * apart requests that carry the same user text, such as a parent agent, its
+   * sub-agent, and the session-title calls.
+   */
+  script(entries: FixtureFileEntry[]): this {
+    this.llm.addFixturesFromJSON(entries);
     return this;
   }
 

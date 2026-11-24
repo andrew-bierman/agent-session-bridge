@@ -70,6 +70,12 @@ const selected = all.filter((c) => {
   return true;
 });
 
+const unknown = [...wanted].filter((id) => !all.some((c) => c.id === id));
+if (unknown.length > 0) {
+  console.error(`conversation not found in chat.db: ${unknown.join(", ")}`);
+  process.exit(1);
+}
+
 let backedUp = false;
 async function backupCodexState(): Promise<void> {
   if (backedUp || !apply || target !== "codex") return;
