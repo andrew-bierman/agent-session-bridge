@@ -22,6 +22,12 @@ bun lint
 bun fmt --check
 ```
 
+`bun run test:containers` is the hermetic counterpart: real Omnigent, Codex,
+Claude Code and Pi in an offline container with only the model responses
+scripted, so it needs no API keys and cannot touch your real tool homes. It
+needs podman or docker and is opt-in; plain `bun test` skips it. See
+[containers/README.md](containers/README.md).
+
 `bun test:real-agents` runs the heavyweight command-level E2E matrix. It creates real Pi, Claude Code, and Codex sessions, imports them through native bridge conversions, resumes the imported sessions with the real CLIs, and verifies:
 
 - round-trip continuation across all six ordered tool pairs

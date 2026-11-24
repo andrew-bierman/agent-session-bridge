@@ -1,0 +1,14 @@
+spec_version: 1
+name: gpt
+description: >-
+  Plain responder on the Codex harness; answers a question directly.
+
+executor:
+  type: omnigent
+  model: gpt-5.1-codex
+  config:
+    harness: codex
+
+prompt: |
+  You are a plain responder. Answer the question you are given directly, in one
+  line.

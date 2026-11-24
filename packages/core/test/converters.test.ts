@@ -40,6 +40,40 @@ describe("converters", () => {
     });
   });
 
+  it("drops Pi system records instead of turning them into empty user messages", () => {
+    const placeholder = {
+      type: "message",
+      id: "sys-1",
+      timestamp: "2026-11-24T05:43:07.000Z",
+      message: { role: "system", content: "" },
+    };
+    expect(convertPiEntryToNormalized(placeholder)).toBeNull();
+    expect(
+      convertPiEntryToNormalized({
+        ...placeholder,
+        message: { role: "system", content: "You are a helpful agent." },
+      }),
+    ).toBeNull();
+  });
+
+  it("still converts Pi user, assistant, and tool results", () => {
+    const at = "2026-11-24T05:43:08.000Z";
+    const user = convertPiEntryToNormalized({
+      type: "message",
+      id: "u",
+      timestamp: at,
+      message: { role: "user", content: [{ type: "text", text: "hi" }] },
+    });
+    const result = convertPiEntryToNormalized({
+      type: "message",
+      id: "t",
+      timestamp: at,
+      message: { role: "toolResult", toolCallId: "c1", content: [] },
+    });
+    expect(user).toMatchObject({ role: "user" });
+    expect(result).toMatchObject({ role: "tool" });
+  });
+
   it("converts Claude lines to the normalized model", () => {
     const line: ClaudeCodeLine = {
       type: "assistant",

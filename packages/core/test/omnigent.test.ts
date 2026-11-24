@@ -11,9 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  OMNIGENT_PROVIDER_ID,
   listOmnigentCodexSessions,
   omnigentBridgeHash,
   omnigentDataDir,
+  retargetOmnigentProvider,
 } from "../src/omnigent.js";
 
 const PARENT = "878cab88463741a5a98dfd0db03b5959";
@@ -211,5 +213,53 @@ describe("omnigent locator", () => {
     });
     writeFileSync(join(dataDir, "codex-native", "process-registry.json"), "{}");
     expect(await listOmnigentCodexSessions(dataDir)).toEqual([]);
+  });
+});
+
+describe("retargetOmnigentProvider", () => {
+  const line = (value: unknown) => JSON.stringify(value);
+  const lines = [
+    line({
+      type: "session_meta",
+      payload: { id: "t", model_provider: OMNIGENT_PROVIDER_ID, cwd: "/w" },
+    }),
+    line({ type: "response_item", payload: { type: "message", role: "user" } }),
+    line({
+      type: "event_msg",
+      payload: {
+        type: "thread_settings_applied",
+        thread_settings: {
+          model: "m",
+          model_provider_id: OMNIGENT_PROVIDER_ID,
+        },
+      },
+    }),
+  ];
+  const text = `${lines.join("\n")}\n`;
+
+  it("rewrites the provider in session_meta and in thread settings", () => {
+    const out = retargetOmnigentProvider(text, "openai").split("\n");
+    expect(JSON.parse(out[0]!).payload.model_provider).toBe("openai");
+    expect(JSON.parse(out[2]!).payload.thread_settings.model_provider_id).toBe(
+      "openai",
+    );
+  });
+
+  it("leaves every other line byte-identical", () => {
+    const out = retargetOmnigentProvider(text, "openai").split("\n");
+    expect(out[1]).toBe(lines[1]);
+    expect(out[3]).toBe("");
+  });
+
+  it("returns a rollout from any other provider unchanged", () => {
+    const other = text.replaceAll(OMNIGENT_PROVIDER_ID, "openai");
+    expect(retargetOmnigentProvider(other, "mock")).toBe(other);
+  });
+
+  it("keeps a malformed line as it was", () => {
+    const broken = `${lines[0]}\n{not json\n`;
+    expect(retargetOmnigentProvider(broken, "openai").split("\n")[1]).toBe(
+      "{not json",
+    );
   });
 });

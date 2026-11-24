@@ -476,7 +476,8 @@ ON CONFLICT(id) DO UPDATE SET
     // Feed the statement on stdin: long first messages are written into the
     // SQL several times and would exceed the per-argument limit (~128KB).
     const run = execFile("sqlite3", [dbPath]);
-    run.child.stdin?.end(sql);
+    // A live Codex can hold the state DB lock; wait for it instead of failing.
+    run.child.stdin?.end(`.timeout 5000\n${sql}`);
     await run;
   } catch {
     // Resume-by-id still works from the rollout scan fallback even when the

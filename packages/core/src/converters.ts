@@ -357,6 +357,13 @@ export function convertPiEntryToNormalized(
     return null;
   }
 
+  // A system record is not a conversation turn. Pi writes an empty one at the
+  // start of every session; mapping it to a user message would send an empty
+  // user text block, which the Anthropic API rejects.
+  if (role === "system") {
+    return null;
+  }
+
   if (role === "toolResult") {
     return {
       id: entry.id ?? "pi-tool-result",

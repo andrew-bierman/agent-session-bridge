@@ -134,8 +134,9 @@ describe("omnigent-codex-sync", () => {
     run("--apply");
     const again = run("--apply");
     expect(again.status).toBe(0);
-    expect(again.stdout).toContain(`skip (already present): ${THREAD}`);
-    expect(again.stdout).toContain("0 synced");
+    expect(again.stdout).toContain(
+      "0 synced, 1 already present, 0 not indexed",
+    );
     expect(rows().split("\n")).toHaveLength(1);
   });
 
@@ -191,6 +192,92 @@ describe("omnigent-codex-sync", () => {
     expect(only.stdout).not.toContain("parent-t");
   });
 
+  it("retargets an Omnigent-provider rollout to openai in the copy, and in the thread row", () => {
+    const lines = validLines(THREAD).map((l) =>
+      l.type === "session_meta"
+        ? {
+            ...l,
+            payload: { ...l.payload, model_provider: "omnigent_provider" },
+          }
+        : l,
+    );
+    const source = writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, lines);
+    const before = readFileSync(source, "utf8");
+    const r = run("--apply");
+    expect(r.status).toBe(0);
+    const copy = readFileSync(
+      join(
+        codexHome,
+        "sessions",
+        "2026",
+        "11",
+        "23",
+        `rollout-x-${THREAD}.jsonl`,
+      ),
+      "utf8",
+    );
+    expect(copy).not.toContain("omnigent_provider");
+    expect(copy).toContain('"model_provider":"openai"');
+    expect(readFileSync(source, "utf8")).toBe(before);
+    expect(
+      execFileSync(
+        "sqlite3",
+        [
+          join(codexHome, "state_5.sqlite"),
+          "select model_provider from threads;",
+        ],
+        { encoding: "utf8" },
+      ).trim(),
+    ).toBe("openai");
+  });
+
+  it("--model-provider chooses the provider the copy is retargeted to", () => {
+    const lines = validLines(THREAD).map((l) =>
+      l.type === "session_meta"
+        ? {
+            ...l,
+            payload: { ...l.payload, model_provider: "omnigent_provider" },
+          }
+        : l,
+    );
+    writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, lines);
+    run("--apply", "--model-provider", "azure");
+    const copy = readFileSync(
+      join(
+        codexHome,
+        "sessions",
+        "2026",
+        "11",
+        "23",
+        `rollout-x-${THREAD}.jsonl`,
+      ),
+      "utf8",
+    );
+    expect(copy).toContain('"model_provider":"azure"');
+  });
+
+  it("copies a rollout from another provider byte for byte", () => {
+    const source = writeRollout(
+      sessions(),
+      `rollout-x-${THREAD}.jsonl`,
+      validLines(THREAD),
+    );
+    run("--apply");
+    expect(
+      readFileSync(
+        join(
+          codexHome,
+          "sessions",
+          "2026",
+          "11",
+          "23",
+          `rollout-x-${THREAD}.jsonl`,
+        ),
+        "utf8",
+      ),
+    ).toBe(readFileSync(source, "utf8"));
+  });
+
   it("handles a missing Omnigent data dir", () => {
     const r = run();
     expect(r.status).toBe(0);
@@ -204,9 +291,25 @@ describe("omnigent-codex-sync", () => {
     const existing = join(nativeDir, `rollout-x-${THREAD}.jsonl`);
     writeFileSync(existing, "user-owned content\n");
     const r = run("--apply");
-    expect(r.status).toBe(0);
+    // The file is never replaced; being unreadable as a rollout it cannot be
+    // indexed, which is reported as a failure rather than a silent success.
+    expect(r.status).toBe(1);
     expect(readFileSync(existing, "utf8")).toBe("user-owned content\n");
-    expect(r.stdout).toContain("0 synced");
+    expect(r.stdout).toContain("0 synced, 1 already present, 1 not indexed");
+  });
+
+  it("re-indexes an existing copy whose index row is missing", () => {
+    writeRollout(sessions(), `rollout-x-${THREAD}.jsonl`, validLines(THREAD));
+    expect(run("--apply").status).toBe(0);
+    execFileSync("sqlite3", [
+      join(codexHome, "state_5.sqlite"),
+      `DELETE FROM threads WHERE id = '${THREAD}';`,
+    ]);
+    expect(rows()).toBe("");
+    const r = run("--apply");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("0 synced, 1 already present, 0 not indexed");
+    expect(rows().split("\n")).toHaveLength(1);
   });
 
   it("syncs a session that never got a user message", () => {

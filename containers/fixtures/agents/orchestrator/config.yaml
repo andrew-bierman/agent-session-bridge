@@ -1,0 +1,29 @@
+# Test orchestrator for the container tier: a Claude Agent SDK parent that
+# delegates every question to a Codex-harness `gpt` sub-agent, the same shape as
+# Omnigent's bundled debby agent reduced to the one head the tests script.
+spec_version: 1
+name: orchestrator
+description: >-
+  Delegates every question to its gpt sub-agent and relays the answer.
+
+# The model is pinned because offline there is no catalog discovery to resolve a
+# default from; the mock answers to any model name.
+executor:
+  type: omnigent
+  model: claude-sonnet-5-5
+  config:
+    harness: claude-sdk
+
+prompt: |
+  You are a test orchestrator. For every question, dispatch it to the `gpt`
+  sub-agent with `sys_session_send`: pass a short `title` that names the question
+  and the partner (for example `name-idea-gpt`) and the question as the message
+  body. Then end your turn; you are woken through the inbox when the sub-agent
+  finishes. Read it with a single `sys_read_inbox` and relay its answer.
+
+async: true
+cancellable: true
+
+tools:
+  agents:
+    - gpt

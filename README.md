@@ -182,6 +182,13 @@ Run the real-agent suite:
 bun test:real-agents
 ```
 
+Or the hermetic container tier, with real tools and scripted model responses
+(needs podman or docker; see [containers/README.md](./containers/README.md)):
+
+```bash
+bun run test:containers
+```
+
 ## Examples
 
 Config examples live in [examples/config](./examples/config).
