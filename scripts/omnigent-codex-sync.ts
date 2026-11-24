@@ -3,7 +3,7 @@
 // the native Codex home and index them so they show up in `codex resume`.
 //
 // Usage:
-//   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply]
+//   bun scripts/omnigent-codex-sync.ts --omnigent-data <dir> [--codex-home ~/.codex] [--apply] [--sub-agents-only]
 //
 // Omnigent keeps each Codex session's private CODEX_HOME at
 // <data dir>/codex-native/<hash>/codex-home. The data dir is ~/.omnigent, or
@@ -13,10 +13,14 @@
 //
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
 // Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
-import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { backfillCodexThreadIndex } from "../packages/core/src/runtime.js";
+import {
+  listOmnigentCodexSessions,
+  omnigentDataDir,
+} from "../packages/core/src/omnigent.js";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
@@ -25,28 +29,10 @@ const opt = (name: string, fallback: string) => {
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
 
-const omnigentData = resolve(
-  opt(
-    "--omnigent-data",
-    process.env.OMNIGENT_DATA_DIR ?? join(homedir(), ".omnigent"),
-  ),
-);
+const dataDir = resolve(opt("--omnigent-data", omnigentDataDir()));
 const codexHome = resolve(opt("--codex-home", join(homedir(), ".codex")));
 const apply = flag("--apply");
-
-async function* walk(dir: string): AsyncGenerator<string> {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) yield* walk(p);
-    else yield p;
-  }
-}
+const subAgentsOnly = flag("--sub-agents-only");
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -57,33 +43,8 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-type SessionMeta = { id: string; cwd: string; timestamp?: string };
-
-async function sessionMeta(rolloutPath: string): Promise<SessionMeta | null> {
-  const text = await readFile(rolloutPath, "utf8");
-  for (const line of text.split("\n").slice(0, 50)) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type === "session_meta" && entry.payload?.id) {
-        return {
-          id: entry.payload.id,
-          cwd: entry.payload.cwd,
-          timestamp: entry.payload.timestamp,
-        };
-      }
-    } catch {
-      // ignore malformed line
-    }
-  }
-  return null;
-}
-
-const found: string[] = [];
-for await (const p of walk(omnigentData)) {
-  if (/rollout-.*\.jsonl$/.test(basename(p)) && p.includes("codex-home"))
-    found.push(p);
-}
+const all = await listOmnigentCodexSessions(dataDir);
+const found = subAgentsOnly ? all.filter((s) => s.kind === "sub_agent") : all;
 
 if (apply) {
   const dbs = (await readdir(codexHome))
@@ -99,36 +60,36 @@ if (apply) {
 
 let copied = 0;
 let skipped = 0;
-for (const src of found) {
-  const meta = await sessionMeta(src);
-  if (!meta) {
-    console.log(`skip (no session_meta): ${src}`);
-    skipped++;
-    continue;
-  }
-  const d = new Date(meta.timestamp ?? Date.now());
+for (const session of found) {
+  const d = new Date(session.startedAt);
   const dest = join(
     codexHome,
     "sessions",
     String(d.getUTCFullYear()),
     String(d.getUTCMonth() + 1).padStart(2, "0"),
     String(d.getUTCDate()).padStart(2, "0"),
-    basename(src),
+    basename(session.rolloutPath),
   );
   if (await exists(dest)) {
-    console.log(`skip (already present): ${meta.id}`);
+    console.log(`skip (already present): ${session.threadId}`);
     skipped++;
     continue;
   }
-  console.log(`${apply ? "sync" : "would sync"}: ${meta.id}  ${meta.cwd}`);
+  const label =
+    session.kind === "sub_agent"
+      ? ` [sub-agent ${session.subAgentName ?? "?"} of ${session.parentConversationId ?? "?"}]`
+      : "";
+  console.log(
+    `${apply ? "sync" : "would sync"}: ${session.threadId}  ${session.cwd}${label}`,
+  );
   if (!apply) continue;
   await mkdir(join(dest, ".."), { recursive: true });
-  await copyFile(src, dest);
+  await copyFile(session.rolloutPath, dest);
   const result = await backfillCodexThreadIndex({
     homeDir: join(codexHome, ".."),
-    threadId: meta.id,
+    threadId: session.threadId,
     rolloutPath: dest,
-    cwd: meta.cwd,
+    cwd: session.cwd,
   });
   console.log(`  indexed: ${JSON.stringify(result)}`);
   copied++;
