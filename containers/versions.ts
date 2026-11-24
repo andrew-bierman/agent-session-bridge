@@ -4,9 +4,8 @@
 // exception: its single owner is package.json, so host `bun test` and the image
 // resolve the same package from bun.lock.
 //
-// Bump deliberately, rebuild, and re-run `bun run test:containers`. Initial pins
-// follow what the maintainer runs. Pi and OpenCode are optional layers: a failed
-// install records a skip reason instead of failing the build.
+// Pi and OpenCode are optional layers: a failed install records a skip reason
+// instead of failing the build.
 export const versions = {
   /** PyPI package `omnigent`. Needs Python >= 3.12. */
   omnigent: "0.23.0",

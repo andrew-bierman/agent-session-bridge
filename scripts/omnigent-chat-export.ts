@@ -13,7 +13,6 @@
 // existing file is never overwritten. With --apply and --target codex the
 // newest state_N.sqlite is backed up before the thread index is touched.
 // Requires bun and the sqlite3 CLI.
-import { copyFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -23,12 +22,14 @@ import {
   readOmnigentConversationMessages,
 } from "../packages/core/src/omnigent-chat.js";
 import {
+  backupNewestCodexState,
+  claudeSessionPath,
   codexRolloutPath,
   exportClaudeSession,
   exportCodexSession,
+  pathExists,
 } from "../packages/core/src/native-export.js";
 import { omnigentDataDir } from "../packages/core/src/omnigent.js";
-import { getClaudeCodeProjectDir } from "../packages/core/src/path-utils.js";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
@@ -45,19 +46,11 @@ const apply = flag("--apply");
 const cwdOverride = opt("--cwd");
 const codexHome = resolve(opt("--codex-home") ?? join(homedir(), ".codex"));
 const claudeHome = resolve(opt("--claude-home") ?? homedir());
+const codexParent = join(codexHome, "..");
 
 if (target !== "codex" && target !== "claude") {
   console.error("--target codex|claude is required");
   process.exit(2);
-}
-
-async function exists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 const wanted = new Set(
@@ -80,15 +73,8 @@ let backedUp = false;
 async function backupCodexState(): Promise<void> {
   if (backedUp || !apply || target !== "codex") return;
   backedUp = true;
-  const dbs = (await readdir(codexHome))
-    .filter((f) => /^state_\d+\.sqlite$/.test(f))
-    .sort();
-  const newest = dbs.at(-1);
-  if (newest) {
-    const backup = join(codexHome, `${newest}.bak-${Date.now()}`);
-    await copyFile(join(codexHome, newest), backup);
-    console.log(`backed up ${newest} -> ${backup}`);
-  }
+  const result = await backupNewestCodexState(codexHome);
+  if (result) console.log(`backed up ${result.name} -> ${result.backup}`);
 }
 
 let written = 0;
@@ -103,11 +89,10 @@ for (const conv of selected) {
   }
   const cwd = cwdOverride ?? conv.workspace ?? process.cwd();
   const sessionId = omnigentCodexThreadId(conv.id);
-  const homeDir = join(codexHome, "..");
 
   if (target === "codex") {
     const dest = codexRolloutPath(codexHome, sessionId, messages[0]!.timestamp);
-    if (await exists(dest)) {
+    if (await pathExists(dest)) {
       console.log(`skip (already present): ${label}`);
       skipped++;
       continue;
@@ -122,15 +107,12 @@ for (const conv of selected) {
       cwd,
       sessionId,
       codexHome,
-      homeDir,
+      homeDir: codexParent,
     });
     console.log(`  indexed: ${JSON.stringify(result.indexed)}`);
   } else {
-    const dest = join(
-      getClaudeCodeProjectDir(cwd, claudeHome),
-      `${sessionId}.jsonl`,
-    );
-    if (await exists(dest)) {
+    const dest = claudeSessionPath(cwd, claudeHome, sessionId);
+    if (await pathExists(dest)) {
       console.log(`skip (already present): ${label}`);
       skipped++;
       continue;

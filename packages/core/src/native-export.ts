@@ -1,5 +1,5 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { convertNormalizedToClaudeLine } from "./converters.js";
 import { getClaudeCodeProjectDir } from "./path-utils.js";
@@ -45,13 +45,40 @@ export function codexRolloutPath(
   );
 }
 
-async function exists(path: string): Promise<boolean> {
+export async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Copy the newest `state_N.sqlite` in a Codex home to `<name>.bak-<timestamp>`
+ * before the thread index is touched. Returns the backup's name and path, or
+ * undefined when the home has no state database yet.
+ */
+export async function backupNewestCodexState(
+  codexHome: string,
+): Promise<{ name: string; backup: string } | undefined> {
+  const newest = (await readdir(codexHome))
+    .filter((file) => /^state_\d+\.sqlite$/.test(file))
+    .sort()
+    .at(-1);
+  if (!newest) return undefined;
+  const backup = join(codexHome, `${newest}.bak-${Date.now()}`);
+  await copyFile(join(codexHome, newest), backup);
+  return { name: newest, backup };
+}
+
+/** Where an exported Claude Code session lands for a working directory. */
+export function claudeSessionPath(
+  cwd: string,
+  homeDir: string,
+  sessionId: string,
+): string {
+  return join(getClaudeCodeProjectDir(cwd, homeDir), `${sessionId}.jsonl`);
 }
 
 /**
@@ -71,7 +98,7 @@ export async function exportCodexSession(
     params.sessionId,
     first.timestamp,
   );
-  if (await exists(rolloutPath)) {
+  if (await pathExists(rolloutPath)) {
     return { status: "exists", rolloutPath };
   }
 
@@ -116,9 +143,12 @@ export async function exportClaudeSession(
   if (params.messages.length === 0) {
     throw new Error("Cannot export a conversation with no messages");
   }
-  const dir = getClaudeCodeProjectDir(params.cwd, params.homeDir);
-  const sessionPath = join(dir, `${params.sessionId}.jsonl`);
-  if (await exists(sessionPath)) {
+  const sessionPath = claudeSessionPath(
+    params.cwd,
+    params.homeDir,
+    params.sessionId,
+  );
+  if (await pathExists(sessionPath)) {
     return { status: "exists", sessionPath };
   }
   let parent: string | null = null;
@@ -132,7 +162,7 @@ export async function exportClaudeSession(
     parent = line.uuid ?? null;
     return JSON.stringify(line);
   });
-  await mkdir(dir, { recursive: true });
+  await mkdir(dirname(sessionPath), { recursive: true });
   await writeFile(sessionPath, `${lines.join("\n")}\n`);
   return { status: "exported", sessionPath };
 }

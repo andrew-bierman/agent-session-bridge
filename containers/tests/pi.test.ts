@@ -85,7 +85,6 @@ describeInContainer(
       const snapshot = await loadSourceSessionSnapshot("pi", path!);
       messages = snapshot.chunks.map((chunk) => chunk.message);
       const blocks = messages.flatMap((m) => m.content);
-      // Pi's empty system record is not carried as an empty user message.
       expect(messages[0]).toMatchObject({ role: "user" });
       expect(textOf(messages[0]!)).toContain(PROMPT);
       for (const message of messages) {

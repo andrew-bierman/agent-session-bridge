@@ -86,7 +86,6 @@ describeInContainer("real Claude Code against the mock", () => {
   it("exports the same conversation with the line types and keys real Claude Code writes", () => {
     const realLines = readSession(findSessions(real.configDir)[0]!);
     const messages = echoConversation({ callId: "toolu_exported_1" });
-    // Build the file through the production exporter into a scratch home.
     const scratch = createClaudeSandbox(mock.anthropicBaseUrl);
     return exportClaudeSession({
       messages,
@@ -97,12 +96,10 @@ describeInContainer("real Claude Code against the mock", () => {
       const exported = readSession(findSessions(scratch.configDir)[0]!);
       expect(exported).toHaveLength(4);
 
-      // Exported line types are all types real Claude Code writes.
       const realKinds = kinds(realLines);
       for (const type of kinds(exported))
         expect(realKinds.has(type)).toBe(true);
 
-      // Same required keys as the real user and assistant lines.
       const required = [
         "uuid",
         "parentUuid",
@@ -120,7 +117,6 @@ describeInContainer("real Claude Code against the mock", () => {
         }
       }
 
-      // Tool call and result are content blocks, chained by parentUuid.
       const [first, second, third] = exported;
       expect(first!.parentUuid).toBeNull();
       expect(second!.parentUuid).toBe(first!.uuid);

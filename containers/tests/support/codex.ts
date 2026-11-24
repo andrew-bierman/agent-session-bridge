@@ -212,7 +212,6 @@ export async function resumeInTui(
     await Bun.sleep(500);
   }
   const reached = mock.requestsContaining(prompt).length > 0;
-  // Give the reply time to render before reading the screen.
   await Bun.sleep(3_000);
   const screen = terminal.screen();
   terminal.kill();

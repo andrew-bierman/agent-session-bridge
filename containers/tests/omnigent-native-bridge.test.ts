@@ -97,7 +97,6 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
       console.error(screen(omni));
       throw error;
     }
-    // Let Codex finish writing the turn, then close the terminal.
     await Bun.sleep(2_000);
     stopTerminal(omni);
     const conversations = await listOmnigentConversations(omni.dataDir);
@@ -161,7 +160,6 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
       },
     ]);
     mock.clearRequests();
-    // The output Codex really recorded for the call, whatever the command did.
     const recordedOutput = String(
       readRollout(session.rolloutPath).find(
         (line) => line.payload.type === "function_call_output",
@@ -190,7 +188,6 @@ describeInContainer("Omnigent native Codex bridge, locator, and sync", () => {
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(mock.unmatchedSummary()).toEqual([]);
 
-    // A second apply skips the rollout already present and adds no thread row.
     const again = await runCodexSync(omni, [
       "--codex-home",
       target.codexHome,

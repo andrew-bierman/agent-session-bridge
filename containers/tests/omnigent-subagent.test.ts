@@ -355,7 +355,6 @@ describeInContainer(
       expect(send).toBeLessThan(wake);
       expect(wake).toBeLessThan(inbox);
       expect(inbox).toBeLessThan(final);
-      // The delegation call and its output are paired, with the output after the call.
       const sendId = history[send]!.tool_calls![0]!.id;
       const sendOutput = history.findIndex(
         (m) => m.role === "tool" && m.tool_call_id === sendId,

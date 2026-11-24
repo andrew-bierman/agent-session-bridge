@@ -15,17 +15,14 @@
 // cannot resume; the copy is retargeted to --model-provider (default openai).
 // Dry run by default. With --apply it backs up the target state_N.sqlite first.
 // Runs straight from TypeScript source; requires bun and the sqlite3 CLI.
-import {
-  copyFile,
-  mkdir,
-  readdir,
-  readFile,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { backfillCodexThreadIndex } from "../packages/core/src/runtime.js";
+import {
+  backupNewestCodexState,
+  pathExists,
+} from "../packages/core/src/native-export.js";
 import {
   listOmnigentCodexSessions,
   omnigentDataDir,
@@ -45,28 +42,12 @@ const apply = flag("--apply");
 const subAgentsOnly = flag("--sub-agents-only");
 const modelProvider = opt("--model-provider", "openai");
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const all = await listOmnigentCodexSessions(dataDir);
 const found = subAgentsOnly ? all.filter((s) => s.kind === "sub_agent") : all;
 
 if (apply) {
-  const dbs = (await readdir(codexHome))
-    .filter((f) => /^state_\d+\.sqlite$/.test(f))
-    .sort();
-  const newest = dbs.at(-1);
-  if (newest) {
-    const backup = join(codexHome, `${newest}.bak-${Date.now()}`);
-    await copyFile(join(codexHome, newest), backup);
-    console.log(`backed up ${newest} -> ${backup}`);
-  }
+  const result = await backupNewestCodexState(codexHome);
+  if (result) console.log(`backed up ${result.name} -> ${result.backup}`);
 }
 
 let copied = 0;
@@ -81,7 +62,7 @@ for (const session of found) {
     String(d.getUTCDate()).padStart(2, "0"),
     basename(session.rolloutPath),
   );
-  if (await exists(dest)) {
+  if (await pathExists(dest)) {
     console.log(`skip (already present): ${session.threadId}`);
     skipped++;
     continue;

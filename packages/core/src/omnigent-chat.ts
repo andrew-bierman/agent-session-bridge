@@ -41,6 +41,14 @@ export interface OmnigentItemRow {
 
 const HEX32 = /^[0-9a-f]{32}$/;
 
+// `conversation_items.type` values that carry conversation content, and
+// `omnigent_conversation_metadata.kind` for a sub-agent. Other item types
+// (events, 8, and the rest) are skipped.
+const ITEM_MESSAGE = 1;
+const ITEM_FUNCTION_CALL = 2;
+const ITEM_FUNCTION_OUTPUT = 3;
+const KIND_SUB_AGENT = 2;
+
 export function normalizeOmnigentConversationId(id: string): string {
   const hex = id.replaceAll("-", "").toLowerCase();
   if (!HEX32.test(hex)) {
@@ -100,7 +108,7 @@ export async function listOmnigentConversations(
     id: row.id,
     parentId: row.parent || undefined,
     rootId: row.root || undefined,
-    kind: row.kind === 2 ? "sub_agent" : "default",
+    kind: row.kind === KIND_SUB_AGENT ? "sub_agent" : "default",
     subAgentName: row.sub_agent_name || undefined,
     title: row.title || undefined,
     workspace: row.workspace || undefined,
@@ -162,12 +170,28 @@ export function omnigentItemsToMessages(
   const outputSlot = new Map<string, number>();
   const callNames = new Map<string, string>();
 
+  // A call or output seen again replaces the earlier copy's content in the
+  // earlier copy's position; the first sighting appends.
+  const upsert = (
+    slotOf: Map<string, number>,
+    callId: string,
+    message: NormalizedMessage,
+  ) => {
+    const existing = slotOf.get(callId);
+    if (existing !== undefined) {
+      slots[existing] = { ...slots[existing]!, content: message.content };
+    } else {
+      slotOf.set(callId, slots.length);
+      slots.push(message);
+    }
+  };
+
   for (const row of ordered) {
     const data = parseJson(row.data);
     if (!data) continue;
     const timestamp = iso(row.created_at);
 
-    if (row.type === 1) {
+    if (row.type === ITEM_MESSAGE) {
       const role = data.role === "assistant" ? "assistant" : "user";
       const text = messageText(data.content);
       if (!text.trim()) continue;
@@ -177,7 +201,7 @@ export function omnigentItemsToMessages(
         timestamp,
         content: [{ type: "text", text }],
       });
-    } else if (row.type === 2) {
+    } else if (row.type === ITEM_FUNCTION_CALL) {
       const callId = typeof data.call_id === "string" ? data.call_id : row.id;
       const name = typeof data.name === "string" ? data.name : "unknown";
       callNames.set(callId, name);
@@ -189,14 +213,13 @@ export function omnigentItemsToMessages(
           arguments: parseArguments(data.arguments),
         },
       ];
-      const existing = callSlot.get(callId);
-      if (existing !== undefined) {
-        slots[existing] = { ...slots[existing]!, content };
-      } else {
-        callSlot.set(callId, slots.length);
-        slots.push({ id: row.id, role: "assistant", timestamp, content });
-      }
-    } else if (row.type === 3) {
+      upsert(callSlot, callId, {
+        id: row.id,
+        role: "assistant",
+        timestamp,
+        content,
+      });
+    } else if (row.type === ITEM_FUNCTION_OUTPUT) {
       const callId = typeof data.call_id === "string" ? data.call_id : row.id;
       const output =
         typeof data.output === "string"
@@ -210,15 +233,13 @@ export function omnigentItemsToMessages(
           output,
         },
       ];
-      const existing = outputSlot.get(callId);
-      if (existing !== undefined) {
-        slots[existing] = { ...slots[existing]!, content };
-      } else {
-        outputSlot.set(callId, slots.length);
-        slots.push({ id: row.id, role: "tool", timestamp, content });
-      }
+      upsert(outputSlot, callId, {
+        id: row.id,
+        role: "tool",
+        timestamp,
+        content,
+      });
     }
-    // type 8 (events) and every other type carry no conversation content.
   }
 
   // A tool result whose call never made it into history would be rejected by
@@ -239,7 +260,7 @@ export async function readOmnigentConversationMessages(
     dataDir,
     `SELECT lower(hex(id)) AS id, created_at, position, type, data
        FROM conversation_items
-      WHERE lower(hex(conversation_id)) = '${hex}';`,
+      WHERE conversation_id = x'${hex}';`,
   );
   return omnigentItemsToMessages(rows);
 }

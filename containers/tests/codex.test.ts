@@ -129,7 +129,6 @@ describeInContainer("real Codex against the mock", () => {
       );
     }
 
-    // Same paired, top-level call and output as the real run, with string arguments.
     const calls = exported.filter(
       (l) => kind(l) === "response_item:function_call",
     );
@@ -148,7 +147,6 @@ describeInContainer("real Codex against the mock", () => {
       exported.indexOf(outputs[0]!),
     );
 
-    // No tool call is smuggled inside a message: real Codex never writes that.
     for (const line of exported.filter(
       (l) => kind(l) === "response_item:message",
     )) {
@@ -156,7 +154,6 @@ describeInContainer("real Codex against the mock", () => {
       expect(content.every((c) => c.type.endsWith("_text"))).toBe(true);
     }
 
-    // Per record kind, the exporter carries the keys Codex needs to load a session.
     const exportedKeys = keysByKind(exported);
     const realKeys = keysByKind(realLines);
     const required: Record<string, string[]> = {
@@ -228,7 +225,6 @@ describeInContainer("real Codex against the mock", () => {
         followUp: "follow-up question",
       },
     );
-    // Every exported message reached the model, in order, ahead of the new turn.
     for (const index of positions) expect(index).toBeGreaterThanOrEqual(0);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     saveArtifacts("codex-resumed", sandbox.codexHome);
@@ -265,7 +261,6 @@ describeInContainer("real Codex against the mock", () => {
     );
     expect(resumed.reached).toBe(true);
     expect(resumed.screen).toContain("Big follow-up answer.");
-    // The exporter kept both ends of the 300KB message in the rollout it wrote.
     const rollout = await Bun.file(result.rolloutPath).text();
     expect(rollout).toContain(marker);
     expect(rollout).toContain("BIGEND");

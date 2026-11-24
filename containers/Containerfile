@@ -66,7 +66,6 @@ RUN bun install --frozen-lockfile
 COPY . .
 RUN bun run build
 
-# A throwaway HOME is chosen per run; nothing here depends on a real one.
 ENV HOME=/home/asb TMPDIR=/home/asb/tmp
 RUN mkdir -p /home/asb/tmp && chmod 1777 /home/asb /home/asb/tmp
 CMD ["bun", "test", "containers/tests"]
