@@ -1,0 +1,69 @@
+# Hermetic integration image: real Omnigent, Codex, Claude Code (and optionally
+# OpenCode and Pi) plus the mock LLM server's package, all at pinned versions.
+# Network is needed only while building; tests run with --network=none.
+# Build through `bun run containers:build` so versions come from versions.ts.
+FROM docker.io/oven/bun:canary
+
+ARG OMNIGENT_VERSION
+ARG CODEX_VERSION
+ARG CLAUDE_CODE_VERSION
+ARG OPENCODE_VERSION
+ARG PI_VERSION
+ARG PYTHON_VERSION
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl jq sqlite3 tmux tar gzip xz-utils unzip git \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv provides the Python toolchain Omnigent needs (>= 3.12; Debian ships older).
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /uvx /usr/local/bin/
+ENV UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/uv/python
+RUN uv tool install --python "${PYTHON_VERSION}" "omnigent==${OMNIGENT_VERSION}"
+
+# Codex: musl release tarball, one static binary.
+RUN curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-x86_64-unknown-linux-musl.tar.gz" \
+        | tar -xz -C /usr/local/bin \
+    && mv /usr/local/bin/codex-x86_64-unknown-linux-musl /usr/local/bin/codex \
+    && chmod +x /usr/local/bin/codex
+
+# Claude Code: the native distribution, verified against its manifest checksum.
+RUN base="https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION}" \
+    && expected="$(curl -fsSL "$base/manifest.json" | jq -r '.platforms["linux-x64"].checksum')" \
+    && test -n "$expected" && test "$expected" != null \
+    && curl -fsSL "$base/linux-x64/claude" -o /usr/local/bin/claude \
+    && echo "$expected  /usr/local/bin/claude" | sha256sum -c - \
+    && chmod +x /usr/local/bin/claude
+
+# Optional harnesses: a failed install records a skip reason instead of failing
+# the build, so only that tool's tests skip (read by containers/tests/support/skips.ts).
+RUN mkdir -p /opt/asb/skips
+RUN set -x; \
+    ( curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+        | tar -xz -C /usr/local/bin opencode \
+      && chmod +x /usr/local/bin/opencode ) \
+    || echo "opencode ${OPENCODE_VERSION} failed to install" > /opt/asb/skips/opencode.txt
+RUN set -x; \
+    ( mkdir -p /opt/pi \
+      && cd /opt/pi \
+      && curl -fsSL "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-x64.tar.gz" -o pi.tar.gz \
+      && curl -fsSL "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/SHA256SUMS" -o SHA256SUMS \
+      && grep " pi-linux-x64.tar.gz\$" SHA256SUMS | sha256sum -c - \
+      && tar -xz -f pi.tar.gz \
+      && ln -s "$(find /opt/pi -type f -name pi | head -1)" /usr/local/bin/pi \
+      && test -x /usr/local/bin/pi ) \
+    || echo "pi ${PI_VERSION} failed to install" > /opt/asb/skips/pi.txt
+
+WORKDIR /app
+COPY package.json bun.lock bunfig.toml tsconfig.base.json ./
+COPY packages ./packages
+RUN bun install --frozen-lockfile
+COPY . .
+RUN bun run build
+
+# A throwaway HOME is chosen per run; nothing here depends on a real one.
+ENV HOME=/home/asb TMPDIR=/home/asb/tmp
+RUN mkdir -p /home/asb/tmp && chmod 1777 /home/asb /home/asb/tmp
+CMD ["bun", "test", "containers/tests"]

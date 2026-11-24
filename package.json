@@ -54,12 +54,15 @@
     "format": "bun fmt --check",
     "prepack": "bun run build",
     "release:check": "bun lint --no-script && bun test && bun check .",
+    "containers:build": "bun scripts/containers/build.ts",
+    "test:containers": "bun scripts/containers/run.ts",
     "test:real-agents": "REAL_AGENT_E2E=1 bun test packages/core/test/e2e-real-commands.test.ts",
     "test": "bun run build && bun test",
     "test:watch": "bun test --watch",
     "typecheck": "bun check ."
   },
   "devDependencies": {
+    "@copilotkit/aimock": "1.48.1",
     "@types/bun": "^1.4.5",
     "typescript": "^7.0.2"
   },
