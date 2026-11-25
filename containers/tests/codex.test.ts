@@ -26,6 +26,8 @@ import {
 import { describeInContainer, saveArtifacts } from "./support/in-container.js";
 import { locateHistory } from "./support/history.js";
 import { ScriptedMock } from "./support/mock.js";
+import { waitFor } from "./support/omnigent.js";
+import { Terminal } from "./support/terminal.js";
 
 const THREAD = "01a20bd7-c82b-7000-b619-d10335d3ce3e";
 const BIG_THREAD = "01a20bd7-c82b-7000-b619-d10335d3ce3f";
@@ -220,6 +222,72 @@ describeInContainer("real Codex against the mock", () => {
     for (const index of positions) expect(index).toBeGreaterThanOrEqual(0);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     saveArtifacts("codex-resumed", sandbox.codexHome);
+  }, 240_000);
+
+  it("opens a bridge-exported transcript from the bare resume picker", async () => {
+    const sandbox = await warmCodexSandbox(mock, "warm-up picker");
+    const prompt = "Which planet has the Glass Harbor?";
+    const reply = "The Glass Harbor is on synthetic planet Teal.";
+    const timestamp = "2026-11-24T03:00:00.000Z";
+    const result = await exportCodexSession({
+      messages: [
+        {
+          id: "picker-user",
+          role: "user",
+          timestamp,
+          content: [{ type: "text", text: prompt }],
+        },
+        {
+          id: "picker-assistant",
+          role: "assistant",
+          timestamp,
+          content: [{ type: "text", text: reply }],
+        },
+      ],
+      cwd: sandbox.project,
+      sessionId: "01a20bd7-c82b-7000-b619-d10335d3ce41",
+      codexHome: sandbox.codexHome,
+      homeDir: sandbox.homeDir,
+    });
+    expect(result.status).toBe("exported");
+
+    const terminal = Terminal.in(
+      sandbox.root,
+      sandbox.env,
+      sandbox.project,
+      "resume-picker",
+    );
+    terminal.start("codex resume");
+    try {
+      await waitFor(
+        "the exported prompt in the resume picker",
+        () => {
+          const screen = terminal.screen();
+          return (
+            screen.includes("Resume a previous session") &&
+            screen.includes(prompt)
+          );
+        },
+        30_000,
+      );
+      expect(terminal.screen()).not.toContain(reply);
+
+      terminal.keys("Enter");
+      await waitFor(
+        "the exported reply after selecting the picker row",
+        () => {
+          const screen = terminal.screen();
+          return screen.includes(prompt) && screen.includes(reply);
+        },
+        30_000,
+      );
+    } catch (error) {
+      throw new Error(`Codex terminal screen:\n${terminal.screen()}`, {
+        cause: error,
+      });
+    } finally {
+      terminal.kill();
+    }
   }, 240_000);
 
   it("indexes and resumes a session whose first message is 300KB", async () => {
