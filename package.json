@@ -3,7 +3,7 @@
   "private": false,
   "type": "module",
   "version": "0.1.2",
-  "description": "Bridge local AI coding sessions between Pi, Claude Code, and Codex.",
+  "description": "Bridge local AI coding sessions between Pi, Claude Code, Codex, OpenCode, and Omnigent. Runs on Bun.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,14 +23,9 @@
     "README.md",
     "LICENSE",
     "bin",
-    "packages/cli/dist",
-    "packages/cli/package.json",
-    "packages/pi/dist",
-    "packages/pi/package.json",
-    "packages/claude-code/dist",
-    "packages/claude-code/package.json",
-    "packages/codex/dist",
-    "packages/codex/package.json"
+    "packages/*/src",
+    "packages/*/package.json",
+    "packages/pi/index.ts"
   ],
   "keywords": [
     "ai",
@@ -42,22 +37,18 @@
     "typescript"
   ],
   "engines": {
-    "node": ">=22",
     "bun": ">=1.4.6"
   },
   "packageManager": "bun@1.4.6",
   "scripts": {
-    "build": "bun run --filter '*' build",
-    "clean": "find packages -type d -name dist -prune -exec rm -rf {} +",
     "fixture:validate": "bun test packages/core/test/parsers.test.ts",
     "lint": "bun lint --no-script",
     "format": "bun fmt --check",
-    "prepack": "bun run build",
     "release:check": "bun lint --no-script && bun test && bun check .",
     "containers:build": "bun scripts/containers/build.ts",
     "test:containers": "bun scripts/containers/run.ts",
     "test:real-agents": "REAL_AGENT_E2E=1 bun test packages/core/test/e2e-real-commands.test.ts",
-    "test": "bun run build && bun test",
+    "test": "bun test",
     "test:watch": "bun test --watch",
     "typecheck": "bun check ."
   },

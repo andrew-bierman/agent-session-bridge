@@ -566,12 +566,19 @@ CREATE TABLE threads (
           runtimeRootFor(homeDir),
           "packages",
           "claude-code",
-          "dist",
-          "claude-code",
           "src",
-          "hook-cli.js",
+          "hook-cli.ts",
         ),
       ),
+    ).toBe(true);
+    // The hooks import core by relative path, so its source ships beside them.
+    expect(
+      await exists(
+        join(runtimeRootFor(homeDir), "packages", "core", "src", "index.ts"),
+      ),
+    ).toBe(true);
+    expect(
+      await exists(join(runtimeRootFor(homeDir), "packages", "pi", "index.ts")),
     ).toBe(true);
     expect(lines[0]).toContain("setup");
 
@@ -762,14 +769,14 @@ CREATE TABLE threads (
     expect(sessionStartHooks).toEqual([
       {
         type: "command",
-        command: `node ${join(runtimeRootFor(homeDir), "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} session-start`,
+        command: `bun ${join(runtimeRootFor(homeDir), "packages", "claude-code", "src", "hook-cli.ts")} session-start`,
         async: true,
       },
     ]);
     expect(stopHooks).toEqual([
       {
         type: "command",
-        command: `node ${join(runtimeRootFor(homeDir), "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} stop`,
+        command: `bun ${join(runtimeRootFor(homeDir), "packages", "claude-code", "src", "hook-cli.ts")} stop`,
         async: true,
       },
     ]);

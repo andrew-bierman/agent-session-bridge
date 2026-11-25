@@ -273,20 +273,16 @@ function resolveRuntimePackageDir(
 function resolveClaudeHookCliPath(runtimeRoot: string): string {
   return join(
     resolveRuntimePackageDir(runtimeRoot, "claude-code"),
-    "dist",
-    "claude-code",
     "src",
-    "hook-cli.js",
+    "hook-cli.ts",
   );
 }
 
 function resolveCodexHookCliPath(runtimeRoot: string): string {
   return join(
     resolveRuntimePackageDir(runtimeRoot, "codex"),
-    "dist",
-    "codex",
     "src",
-    "hook-cli.js",
+    "hook-cli.ts",
   );
 }
 
@@ -373,30 +369,32 @@ async function installRuntimeBundle(
 
   await mkdirImpl(join(runtimeRoot, "packages"), { recursive: true });
 
-  for (const packageName of ["pi", "claude-code", "codex"] as const) {
+  // The runtime runs straight from TypeScript source (Bun), so there is no build
+  // step: each package's src, plus the core source they import by relative path.
+  for (const packageName of ["pi", "claude-code", "codex", "core"] as const) {
     const sourceDir = join(packageRoot, "packages", packageName);
     const targetDir = join(runtimeRoot, "packages", packageName);
     const sourcePackageJson = join(sourceDir, "package.json");
-    const sourceDistDir = join(sourceDir, "dist");
+    const sourceSrcDir = join(sourceDir, "src");
 
-    if (!(await pathExists(sourcePackageJson, deps))) {
-      throw new Error(
-        `Missing packaged asset: ${sourcePackageJson}. Run bun run build before setup.`,
-      );
-    }
-    if (!(await pathExists(sourceDistDir, deps))) {
-      throw new Error(
-        `Missing packaged asset: ${sourceDistDir}. Run bun run build before setup.`,
-      );
+    for (const asset of [sourcePackageJson, sourceSrcDir]) {
+      if (!(await pathExists(asset, deps))) {
+        throw new Error(`Missing packaged asset: ${asset}.`);
+      }
     }
 
     await rmImpl(targetDir, { force: true, recursive: true });
     await mkdirImpl(targetDir, { recursive: true });
     await cpImpl(sourcePackageJson, join(targetDir, "package.json"));
-    await cpImpl(sourceDistDir, join(targetDir, "dist"), {
+    await cpImpl(sourceSrcDir, join(targetDir, "src"), {
       recursive: true,
       force: true,
     });
+    // The Pi package's entry point sits beside src.
+    const entry = join(sourceDir, "index.ts");
+    if (packageName === "pi") {
+      await cpImpl(entry, join(targetDir, "index.ts"));
+    }
   }
 
   return runtimeRoot;
@@ -492,7 +490,7 @@ async function configureClaudeHooks(
   const settingsPath = join(homeDir, ".claude", "settings.json");
   const hookCliPath = resolveClaudeHookCliPath(runtimeRoot);
   const isBridgeClaudeHook = (command: string): boolean =>
-    command.includes("packages/claude-code") && command.includes("hook-cli.js");
+    command.includes("packages/claude-code") && command.includes("hook-cli.");
   let settings: Record<string, unknown> = {};
 
   try {
@@ -517,13 +515,13 @@ async function configureClaudeHooks(
 
   hooks.SessionStart = mergeHookArray(
     hooks.SessionStart,
-    `node ${hookCliPath} session-start`,
+    `bun ${hookCliPath} session-start`,
     isBridgeClaudeHook,
     { async: true },
   );
   hooks.Stop = mergeHookArray(
     hooks.Stop,
-    `node ${hookCliPath} stop`,
+    `bun ${hookCliPath} stop`,
     isBridgeClaudeHook,
     { async: true },
   );
@@ -557,7 +555,7 @@ async function configureCodexHooks(
           hooks: [
             {
               type: "command",
-              command: `node ${hookCliPath} session-start`,
+              command: `bun ${hookCliPath} session-start`,
               async: true,
             },
           ],
@@ -568,7 +566,7 @@ async function configureCodexHooks(
           hooks: [
             {
               type: "command",
-              command: `node ${hookCliPath} stop`,
+              command: `bun ${hookCliPath} stop`,
               async: true,
             },
           ],
@@ -728,11 +726,11 @@ async function inspectClaudeInstall(
   const hookCliPath = resolveClaudeHookCliPath(runtimeRoot);
   const startInstalled = hookCommandExists(
     hooks.SessionStart,
-    `node ${hookCliPath} session-start`,
+    `bun ${hookCliPath} session-start`,
   );
   const stopInstalled = hookCommandExists(
     hooks.Stop,
-    `node ${hookCliPath} stop`,
+    `bun ${hookCliPath} stop`,
   );
   return {
     installed: startInstalled && stopInstalled,
@@ -760,11 +758,11 @@ async function inspectCodexInstall(
   const hookCliPath = resolveCodexHookCliPath(runtimeRoot);
   const startInstalled = hookCommandExists(
     hooks.SessionStart,
-    `node ${hookCliPath} session-start`,
+    `bun ${hookCliPath} session-start`,
   );
   const stopInstalled = hookCommandExists(
     hooks.Stop,
-    `node ${hookCliPath} stop`,
+    `bun ${hookCliPath} stop`,
   );
   return {
     installed: startInstalled && stopInstalled,

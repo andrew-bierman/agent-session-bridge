@@ -12,13 +12,12 @@
   "bugs": {
     "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
   },
-  "main": "./dist/claude-code/src/index.js",
-  "types": "./dist/claude-code/src/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "files": [
-    "dist"
+    "src"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
     "typecheck": "bun check -p tsconfig.json"
   },
   "dependencies": {

@@ -47,17 +47,20 @@ The distinctive angle is `local-first durability`.
 
 ## Install
 
-Public npm install:
+The bridge runs on [Bun](https://bun.com) (1.4.6 or newer) straight from its
+TypeScript source: there is no build step and no Node runtime requirement. The
+hooks it installs into Claude Code and Codex run `bun`, so `bun` must be on the
+`PATH` those tools use.
 
 ```bash
-npx agent-session-bridge setup
-npx agent-session-bridge doctor
+bunx agent-session-bridge setup
+bunx agent-session-bridge doctor
 ```
 
 Or install globally:
 
 ```bash
-npm install -g agent-session-bridge
+bun add -g agent-session-bridge
 agent-session-bridge setup
 agent-session-bridge doctor
 ```
@@ -65,9 +68,9 @@ agent-session-bridge doctor
 Tarball flow also works if you want to test an unpublished local build:
 
 ```bash
-npm pack
-npx --yes --package ./agent-session-bridge-0.1.2.tgz agent-session-bridge setup
-npx --yes --package ./agent-session-bridge-0.1.2.tgz agent-session-bridge doctor
+bun pm pack
+bunx --package ./agent-session-bridge-0.1.2.tgz agent-session-bridge setup
+bunx --package ./agent-session-bridge-0.1.2.tgz agent-session-bridge doctor
 ```
 
 Local checkout flow:
@@ -77,9 +80,8 @@ git clone https://github.com/bohdanpodvirnyi/agent-session-bridge.git
 cd agent-session-bridge
 
 bun install
-bun run build
-node packages/cli/dist/cli/src/index.js setup
-node packages/cli/dist/cli/src/index.js doctor
+bun bin/agent-session-bridge setup
+bun bin/agent-session-bridge doctor
 ```
 
 ## CLI
