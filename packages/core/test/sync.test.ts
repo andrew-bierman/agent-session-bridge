@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   attachMirror,
@@ -81,6 +81,84 @@ describe("sync helpers", () => {
       "event_msg",
       "event_msg",
     ]);
+  });
+
+  describe("Codex rollout tool calls", () => {
+    const rolloutFor = (messages: NormalizedMessage[]) =>
+      convertConversationToCodexRollout(messages, "/repo/demo", "thread-1");
+    const payloadsOfType = (
+      rollout: ReturnType<typeof rolloutFor>,
+      type: string,
+    ) =>
+      rollout
+        .filter((item) => item.type === "response_item")
+        .map((item) => item.payload)
+        .filter((payload) => payload.type === type);
+
+    const toolConversation: NormalizedMessage[] = [
+      {
+        id: "u1",
+        role: "user",
+        timestamp: "2026-04-05T10:00:00.000Z",
+        content: [{ type: "text", text: "list files" }],
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        timestamp: "2026-04-05T10:00:01.000Z",
+        content: [
+          { type: "text", text: "Checking." },
+          {
+            type: "tool_call",
+            id: "call_1",
+            name: "shell",
+            arguments: { cmd: "ls" },
+          },
+        ],
+      },
+      {
+        id: "t1",
+        role: "tool",
+        timestamp: "2026-04-05T10:00:02.000Z",
+        content: [
+          { type: "tool_result", toolCallId: "call_1", output: "a.txt" },
+        ],
+      },
+    ];
+
+    it("writes a tool call as a top-level function_call with string arguments", () => {
+      const calls = payloadsOfType(
+        rolloutFor(toolConversation),
+        "function_call",
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ call_id: "call_1", name: "shell" });
+      expect(calls[0]!.arguments).toBe('{"cmd":"ls"}');
+    });
+
+    it("never nests a function_call or its output inside a message", () => {
+      const messages = payloadsOfType(rolloutFor(toolConversation), "message");
+      for (const message of messages) {
+        const content = message.content as { type: string }[];
+        expect(content.every((part) => part.type.endsWith("_text"))).toBe(true);
+      }
+    });
+
+    it("keeps the call before its output and the text before the call", () => {
+      const items = rolloutFor(toolConversation)
+        .filter((item) => item.type === "response_item")
+        .map((item) =>
+          item.payload.type === "message"
+            ? `message:${item.payload.role}`
+            : String(item.payload.type),
+        );
+      expect(items).toEqual([
+        "message:user",
+        "message:assistant",
+        "function_call",
+        "function_call_output",
+      ]);
+    });
   });
 
   it("attaches mirrors and chooses the correct resume candidate", () => {

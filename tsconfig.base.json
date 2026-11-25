@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -11,8 +10,8 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "paths": {
-      "agent-session-bridge-core": ["packages/core/src/index.ts"]
+      "agent-session-bridge-core": ["./packages/core/src/index.ts"]
     },
-    "types": ["node"]
+    "types": ["bun"]
   }
 }

@@ -1,5 +1,6 @@
+import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { zstdDecompressSync } from "node:zlib";
+import { createZstdDecompress } from "node:zlib";
 
 import type {
   ClaudeCodeLine,
@@ -42,11 +43,35 @@ export async function readClaudeCodeSession(
 export async function readCodexRollout(
   path: string,
 ): Promise<CodexRolloutItem[]> {
-  const raw = await readFile(path);
-  const content = path.endsWith(".zst")
-    ? zstdDecompressSync(raw).toString("utf8")
-    : raw.toString("utf8");
-  return parseJsonLines(content) as CodexRolloutItem[];
+  const items: CodexRolloutItem[] = [];
+  for await (const item of iterateCodexRollout(path)) items.push(item);
+  return items;
+}
+
+export async function* iterateCodexRollout(
+  path: string,
+): AsyncGenerator<CodexRolloutItem> {
+  const file = createReadStream(path);
+  const input = path.endsWith(".zst")
+    ? file.pipe(createZstdDecompress())
+    : file;
+  if (input !== file) file.on("error", (error) => input.destroy(error));
+  let tail = "";
+  try {
+    for await (const chunk of input
+      .setEncoding("utf8")
+      .iterator({ destroyOnReturn: false })) {
+      const lines = (tail + chunk).split("\n");
+      tail = lines.pop()!;
+      for (const line of lines) {
+        if (line.trim()) yield JSON.parse(line) as CodexRolloutItem;
+      }
+    }
+    if (tail.trim()) yield JSON.parse(tail) as CodexRolloutItem;
+  } finally {
+    input.destroy();
+    file.destroy();
+  }
 }
 
 export function flattenPiActiveBranch(session: PiSession): PiSessionEntry[] {

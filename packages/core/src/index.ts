@@ -12,3 +12,6 @@ export * from "./daemon.js";
 export * from "./state.js";
 export * from "./logging.js";
 export * from "./runtime.js";
+export * from "./omnigent.js";
+export * from "./omnigent-chat.js";
+export * from "./native-export.js";

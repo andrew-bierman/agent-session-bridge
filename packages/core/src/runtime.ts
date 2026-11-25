@@ -2,9 +2,13 @@ import {
   access,
   appendFile,
   mkdir,
+  lstat,
+  open,
   realpath,
   readFile,
   readdir,
+  rename,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -35,6 +39,7 @@ import {
 import {
   readClaudeCodeSession,
   readCodexRollout,
+  iterateCodexRollout,
   readPiSession,
 } from "./parsers.js";
 import {
@@ -70,6 +75,8 @@ export interface SourceSessionSnapshot {
   cwd: string;
   updatedAt: string;
   chunks: SourceMessageChunk[];
+  rawMessageCount?: number;
+  omittedSystemRecords?: number;
 }
 
 export interface SyncWriteResult {
@@ -224,16 +231,36 @@ async function walkJsonlFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-async function appendJsonLines(path: string, items: unknown[]): Promise<void> {
-  if (items.length === 0) {
+async function appendJsonLines(
+  path: string,
+  items: unknown[],
+  checkBoundary: boolean,
+): Promise<void> {
+  if (!items.length) return;
+  await mkdir(dirname(path), { recursive: true });
+  const records = items.map((item) => JSON.stringify(item)).join("\n") + "\n";
+  if (!checkBoundary) {
+    await appendFile(path, records, "utf8");
     return;
   }
-  await mkdir(dirname(path), { recursive: true });
-  await appendFile(
-    path,
-    `${items.map((item) => JSON.stringify(item)).join("\n")}\n`,
-    "utf8",
-  );
+  const file = await open(path, "a+");
+  try {
+    const { size } = await file.stat();
+    const last = Buffer.alloc(1);
+    if (size) {
+      const { bytesRead } = await file.read(last, 0, 1, size - 1);
+      if (bytesRead !== 1)
+        throw new Error(
+          "Target transcript changed while checking its last record",
+        );
+    }
+    await file.appendFile(
+      size && last[0] !== 10 ? "\n" + records : records,
+      "utf8",
+    );
+  } finally {
+    await file.close();
+  }
 }
 
 function extractCodexThreadTitleAndFirstUserMessage(
@@ -319,6 +346,51 @@ function buildSqlAssignment(
   };
 }
 
+type CodexRolloutMeta = {
+  cliVersion?: string;
+  source?: string;
+  modelProvider?: string;
+  model?: string;
+  approvalPolicy?: string;
+  reasoningEffort?: string;
+};
+
+// Best-effort read of the rollout's own metadata so backfilled rows reflect
+// the session that produced it instead of hardcoded defaults.
+async function readCodexRolloutMeta(
+  rolloutPath: string,
+): Promise<CodexRolloutMeta> {
+  const meta: CodexRolloutMeta = {};
+  try {
+    const text = await readFile(rolloutPath, "utf8");
+    for (const line of text.split("\n").slice(0, 200)) {
+      if (!line.trim()) continue;
+      let entry: { type?: string; payload?: Record<string, unknown> };
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const payload = entry.payload ?? {};
+      const str = (v: unknown) =>
+        typeof v === "string" && v.length > 0 ? v : undefined;
+      if (entry.type === "session_meta") {
+        meta.cliVersion ??= str(payload.cli_version);
+        meta.source ??= str(payload.source);
+        meta.modelProvider ??= str(payload.model_provider);
+      } else if (entry.type === "turn_context") {
+        meta.model ??= str(payload.model);
+        meta.approvalPolicy ??= str(payload.approval_policy);
+        meta.reasoningEffort ??= str(payload.effort);
+      }
+      if (meta.cliVersion && meta.model && meta.approvalPolicy) break;
+    }
+  } catch {
+    // Rollout unreadable: fall back to defaults.
+  }
+  return meta;
+}
+
 async function upsertCodexThreadIndex(params: {
   homeDir: string;
   threadId: string;
@@ -339,6 +411,7 @@ async function upsertCodexThreadIndex(params: {
     return;
   }
 
+  const rollout = await readCodexRolloutMeta(params.rolloutPath);
   const createdAtSeconds = Math.floor(Date.parse(params.createdAt) / 1000);
   const updatedAtSeconds = Math.floor(Date.parse(params.updatedAt) / 1000);
   const requestedAssignments = [
@@ -346,23 +419,30 @@ async function upsertCodexThreadIndex(params: {
     buildSqlAssignment("rollout_path", params.rolloutPath),
     buildSqlAssignment("created_at", createdAtSeconds),
     buildSqlAssignment("updated_at", updatedAtSeconds),
-    buildSqlAssignment("source", "vscode"),
-    buildSqlAssignment("model_provider", "openai"),
+    buildSqlAssignment("source", rollout.source ?? "vscode"),
+    buildSqlAssignment("model_provider", rollout.modelProvider ?? "openai"),
     buildSqlAssignment("cwd", params.cwd),
     buildSqlAssignment("title", params.title),
     buildSqlAssignment("sandbox_policy", "workspace-write"),
-    buildSqlAssignment("approval_mode", "never"),
+    buildSqlAssignment("approval_mode", rollout.approvalPolicy ?? "never"),
     buildSqlAssignment("tokens_used", 0),
     buildSqlAssignment(
       "has_user_event",
       params.firstUserMessage.length > 0 ? 1 : 0,
     ),
     buildSqlAssignment("archived", 0),
-    buildSqlAssignment("cli_version", "0.115.0"),
+    buildSqlAssignment("cli_version", rollout.cliVersion ?? "0.115.0"),
     buildSqlAssignment("first_user_message", params.firstUserMessage),
     buildSqlAssignment("memory_mode", "enabled"),
-    buildSqlAssignment("model", "gpt-5.4"),
-    buildSqlAssignment("reasoning_effort", "medium"),
+    buildSqlAssignment("model", rollout.model ?? "gpt-5.4"),
+    buildSqlAssignment("reasoning_effort", rollout.reasoningEffort ?? "medium"),
+    // Codex's resume picker skips rows with an empty preview.
+    buildSqlAssignment("preview", params.firstUserMessage),
+    buildSqlAssignment("thread_source", "user"),
+    buildSqlAssignment("created_at_ms", createdAtSeconds * 1000),
+    buildSqlAssignment("updated_at_ms", updatedAtSeconds * 1000),
+    buildSqlAssignment("recency_at", updatedAtSeconds),
+    buildSqlAssignment("recency_at_ms", updatedAtSeconds * 1000),
   ].filter((assignment) => availableColumns.has(assignment.column));
 
   const insertColumns = requestedAssignments.map(
@@ -373,7 +453,9 @@ async function upsertCodexThreadIndex(params: {
   );
   const updateAssignments = requestedAssignments
     .filter((assignment) => assignment.column !== "id")
-    .map((assignment) => `${assignment.column} = excluded.${assignment.column}`);
+    .map(
+      (assignment) => `${assignment.column} = excluded.${assignment.column}`,
+    );
 
   if (
     insertColumns.length === 0 ||
@@ -391,7 +473,12 @@ ON CONFLICT(id) DO UPDATE SET
 `;
 
   try {
-    await execFile("sqlite3", [dbPath, sql]);
+    // Feed the statement on stdin: long first messages are written into the
+    // SQL several times and would exceed the per-argument limit (~128KB).
+    const run = execFile("sqlite3", [dbPath]);
+    // A live Codex can hold the state DB lock; wait for it instead of failing.
+    run.child.stdin?.end(`.timeout 5000\n${sql}`);
+    await run;
   } catch {
     // Resume-by-id still works from the rollout scan fallback even when the
     // local thread index is unavailable.
@@ -477,8 +564,7 @@ export async function backfillCodexThreadIndex(params: {
 
   const { title, firstUserMessage } =
     extractCodexThreadTitleAndFirstUserMessage(snapshot.chunks);
-  const createdAt =
-    snapshot.chunks[0]?.message.timestamp ?? snapshot.updatedAt;
+  const createdAt = snapshot.chunks[0]?.message.timestamp ?? snapshot.updatedAt;
 
   await upsertCodexThreadIndex({
     homeDir: params.homeDir,
@@ -571,11 +657,168 @@ async function loadTargetCodexState(path: string): Promise<{
     return { count: 0, hasMeta: false };
   }
 
-  const items = await readCodexRollout(path);
-  return {
-    count: items.length,
-    hasMeta: items.some((item) => item.type === "session_meta"),
-  };
+  let count = 0;
+  let hasMeta = false;
+  for await (const item of iterateCodexRollout(path)) {
+    count += 1;
+    hasMeta ||= item.type === "session_meta";
+  }
+  return { count, hasMeta };
+}
+
+// shortcut: carry tool history as inert transcript text until every target can replay native tool pairs safely.
+function openCodeHistoryBlock(block: any): { type: "text"; text: string }[] {
+  if (block?.type === "text" && typeof block.text === "string") return [block];
+  if (block?.type === "reasoning") return [];
+  const state = block?.state;
+  if (
+    block?.type !== "tool" ||
+    typeof block.name !== "string" ||
+    typeof block.id !== "string" ||
+    !state ||
+    typeof state.input !== "object" ||
+    !state.input ||
+    Array.isArray(state.input)
+  ) {
+    throw new Error("Unsupported OpenCode assistant content");
+  }
+  if (
+    state.status === "completed" &&
+    (!Array.isArray(state.content) ||
+      state.content.some(
+        (part: any) =>
+          part?.type !== "file" &&
+          (part?.type !== "text" || typeof part.text !== "string"),
+      ))
+  ) {
+    throw new Error("Unsupported OpenCode tool result");
+  }
+  if (state.status !== "completed" && state.status !== "error") {
+    throw new Error("OpenCode tool call is unsettled");
+  }
+  return [
+    {
+      type: "text",
+      text:
+        "Historical OpenCode tool record (already settled): " +
+        JSON.stringify({
+          id: block.id,
+          name: block.name,
+          input: state.input,
+          status: state.status,
+          ...(state.status === "completed"
+            ? {
+                output: state.content.map((part: any) =>
+                  part.type === "file"
+                    ? "[Source tool attachment omitted; see the original session]"
+                    : part.text,
+                ),
+              }
+            : { error: state.error }),
+        }),
+    },
+  ];
+}
+
+function normalizeOpenCodeMessages(
+  messages: any[],
+  startOffset = 0,
+): SourceMessageChunk[] {
+  return messages.flatMap((entry, index) => {
+    if (
+      entry?.type === "agent-switched" ||
+      entry?.type === "idle" ||
+      entry?.type === "model-switched" ||
+      entry?.type === "system"
+    )
+      return [];
+    let historical: string | undefined;
+    if (entry?.type === "synthetic" && typeof entry.text === "string") {
+      historical =
+        "Historical OpenCode synthetic record: " + JSON.stringify(entry.text);
+    } else if (
+      entry?.type === "compaction" &&
+      entry.status === "completed" &&
+      typeof entry.summary === "string"
+    ) {
+      historical =
+        "Historical OpenCode compaction summary: " +
+        JSON.stringify(entry.summary);
+    } else if (entry?.type === "compaction" && entry.status === "failed") {
+      historical = "[Source OpenCode compaction failed]";
+    } else if (
+      entry?.type === "shell" &&
+      (entry.status === "exited" || entry.status === "killed") &&
+      typeof entry.command === "string"
+    ) {
+      historical =
+        "Historical OpenCode shell record: " +
+        JSON.stringify({
+          command: entry.command,
+          status: entry.status,
+          exit: entry.exit,
+          output: entry.output,
+        });
+    } else if (entry?.type === "location-switched" && entry.location) {
+      historical =
+        "Historical OpenCode project location change: " +
+        JSON.stringify(entry.location);
+    }
+    const blocks =
+      historical !== undefined
+        ? [{ type: "text", text: historical }]
+        : entry?.type === "user" && typeof entry.text === "string"
+          ? [
+              {
+                type: "text",
+                text: entry.files?.length
+                  ? entry.text +
+                    "\n[Source attachments omitted; see the original session]"
+                  : entry.text,
+              },
+            ]
+          : entry?.type === "assistant"
+            ? entry.error && Array.isArray(entry.content)
+              ? [
+                  ...entry.content,
+                  {
+                    type: "text",
+                    text: "[Source OpenCode assistant turn failed]",
+                  },
+                ]
+              : entry.content
+            : null;
+    if (
+      (entry?.error &&
+        entry.type !== "assistant" &&
+        historical === undefined) ||
+      typeof entry?.id !== "string" ||
+      !Number.isFinite(entry?.time?.created) ||
+      !Array.isArray(blocks)
+    ) {
+      throw new Error(`Unsupported OpenCode message at index ${index}`);
+    }
+    const content =
+      entry.type === "assistant"
+        ? blocks.flatMap(openCodeHistoryBlock)
+        : blocks.map((block) => {
+            if (typeof block.text !== "string")
+              throw new Error("Invalid OpenCode user text");
+            return block;
+          });
+    if (!content.length) return [];
+    return [
+      {
+        sourceOffset: startOffset + index + 1,
+        message: {
+          id: entry.id,
+          role: historical !== undefined ? "assistant" : entry.type,
+          timestamp: new Date(entry.time.created).toISOString(),
+          content,
+        },
+      },
+    ];
+  });
 }
 
 export async function loadSourceSessionSnapshot(
@@ -584,6 +827,39 @@ export async function loadSourceSessionSnapshot(
   explicitSessionId?: string,
 ): Promise<SourceSessionSnapshot> {
   const info = await waitForSourceSessionFile(sourcePath);
+
+  if (sourceTool === "opencode") {
+    const bundle = JSON.parse(await readFile(sourcePath, "utf8"));
+    const { info, messages } = bundle;
+    const cwd = info?.location?.directory;
+    const id = info?.id;
+    if (
+      typeof cwd !== "string" ||
+      !cwd.startsWith("/") ||
+      typeof id !== "string" ||
+      !id.startsWith("ses_") ||
+      !Array.isArray(messages)
+    ) {
+      throw new Error("Expected an OpenCode v2 session export");
+    }
+    if (explicitSessionId && id !== explicitSessionId)
+      throw new Error("OpenCode export session identity changed");
+    const chunks = normalizeOpenCodeMessages(messages);
+    return {
+      sourceTool,
+      sourcePath,
+      sourceSessionId: id,
+      rawMessageCount: messages.length,
+      omittedSystemRecords: messages.filter(
+        (message) => message?.type === "system",
+      ).length,
+      cwd,
+      updatedAt: new Date(
+        info.time?.updated ?? info.time?.created,
+      ).toISOString(),
+      chunks,
+    };
+  }
 
   if (sourceTool === "pi") {
     const session = await readPiSession(sourcePath);
@@ -616,6 +892,7 @@ export async function loadSourceSessionSnapshot(
       .map((line) => getClaudeLineTimestamp(line))
       .filter((value): value is string => Boolean(value));
 
+    const seenToolBlocks = new Set<string>();
     return {
       sourceTool,
       sourcePath,
@@ -624,41 +901,47 @@ export async function loadSourceSessionSnapshot(
       updatedAt: timestamps.at(-1) ?? info.mtime.toISOString(),
       chunks: lines.flatMap((line, index) => {
         const normalized = convertClaudeLineToNormalized(line);
-        return normalized
-          ? [{ sourceOffset: index + 1, message: normalized }]
-          : [];
+        if (!normalized) return [];
+        const content = normalized.content.filter((block) => {
+          if (block.type !== "tool_call" && block.type !== "tool_result")
+            return true;
+          const key = JSON.stringify(block);
+          if (seenToolBlocks.has(key)) return false;
+          seenToolBlocks.add(key);
+          return true;
+        });
+        if (!content.length && normalized.content.length) return [];
+        return [
+          { sourceOffset: index + 1, message: { ...normalized, content } },
+        ];
       }),
     };
   }
 
-  const items = await readCodexRollout(sourcePath);
-  const sessionMeta = items.find((item) => item.type === "session_meta");
-  const sourceSessionId =
-    explicitSessionId ??
-    (typeof sessionMeta?.payload.id === "string"
-      ? sessionMeta.payload.id
-      : undefined) ??
-    deterministicUuid(sourcePath);
-  const cwd =
-    (typeof sessionMeta?.payload.cwd === "string"
-      ? sessionMeta.payload.cwd
-      : undefined) ?? "/";
-  const timestamps = items
-    .map((item) => getCodexItemTimestamp(item))
-    .filter((value): value is string => Boolean(value));
+  let sessionMeta: Record<string, unknown> | undefined;
+  let updatedAt = info.mtime.toISOString();
+  let sourceOffset = 0;
+  const chunks: SourceMessageChunk[] = [];
+  for await (const item of iterateCodexRollout(sourcePath)) {
+    sourceOffset += 1;
+    if (item.type === "session_meta") sessionMeta ??= item.payload;
+    const timestamp = getCodexItemTimestamp(item);
+    if (timestamp) updatedAt = timestamp;
+    const message = convertCodexItemToNormalized(item);
+    if (message) chunks.push({ sourceOffset, message });
+  }
 
   return {
     sourceTool,
     sourcePath,
-    sourceSessionId,
-    cwd,
-    updatedAt: timestamps.at(-1) ?? info.mtime.toISOString(),
-    chunks: items.flatMap((item, index) => {
-      const normalized = convertCodexItemToNormalized(item);
-      return normalized
-        ? [{ sourceOffset: index + 1, message: normalized }]
-        : [];
-    }),
+    sourceSessionId:
+      explicitSessionId ??
+      (typeof sessionMeta?.id === "string"
+        ? sessionMeta.id
+        : deterministicUuid(sourcePath)),
+    cwd: typeof sessionMeta?.cwd === "string" ? sessionMeta.cwd : "/",
+    updatedAt,
+    chunks,
   };
 }
 
@@ -702,6 +985,7 @@ function attachSourceMirror(
     mirrors: {
       ...conversation.mirrors,
       [sourceTool]: {
+        ...conversation.mirrors[sourceTool],
         nativeId: sourceSessionId,
         sessionPath: sourcePath,
       },
@@ -852,7 +1136,7 @@ async function appendToPiMirror(
       continue;
     }
 
-    await appendJsonLines(mirror.sessionPath, [entry]);
+    await appendJsonLines(mirror.sessionPath, [entry], appendedCount === 0);
     appendedCount += 1;
     count += 1;
     nextWatermarks = applySyncDecision(nextWatermarks, decision);
@@ -911,7 +1195,7 @@ async function appendToClaudeMirror(
       continue;
     }
 
-    await appendJsonLines(mirror.sessionPath, [line]);
+    await appendJsonLines(mirror.sessionPath, [line], appendedCount === 0);
     appendedCount += 1;
     count += 1;
     nextWatermarks = applySyncDecision(nextWatermarks, decision);
@@ -934,6 +1218,17 @@ async function appendToCodexMirror(
   nextWatermarks: BridgeConversation["lastWrittenOffsets"];
   finalCount: number;
 }> {
+  if (mirror.sessionPath.endsWith(".zst")) {
+    if (chunks.length)
+      throw new Error(
+        "Compressed Codex rollouts must be reopened in Codex before appending",
+      );
+    return {
+      appendedCount: 0,
+      nextWatermarks: watermarks,
+      finalCount: (await loadTargetCodexState(mirror.sessionPath)).count,
+    };
+  }
   let { count, hasMeta } = await loadTargetCodexState(mirror.sessionPath);
   let nextWatermarks = watermarks;
   let appendedCount = 0;
@@ -951,12 +1246,16 @@ async function appendToCodexMirror(
     );
 
     if (sessionMeta) {
-      await appendJsonLines(mirror.sessionPath, [
-        {
-          timestamp: chunks[0]!.message.timestamp,
-          ...sessionMeta,
-        },
-      ]);
+      await appendJsonLines(
+        mirror.sessionPath,
+        [
+          {
+            timestamp: chunks[0]!.message.timestamp,
+            ...sessionMeta,
+          },
+        ],
+        true,
+      );
       count += 1;
       appendedCount += 1;
       hasMeta = true;
@@ -998,7 +1297,7 @@ async function appendToCodexMirror(
       continue;
     }
 
-    await appendJsonLines(mirror.sessionPath, lines);
+    await appendJsonLines(mirror.sessionPath, lines, appendedCount === 0);
     appendedCount += lines.length;
     count += lines.length;
     hasMeta = true;
@@ -1008,8 +1307,7 @@ async function appendToCodexMirror(
   if (hasMeta) {
     const { title, firstUserMessage } =
       extractCodexThreadTitleAndFirstUserMessage(chunks);
-    const createdAt =
-      chunks[0]?.message.timestamp ?? new Date().toISOString();
+    const createdAt = chunks[0]?.message.timestamp ?? new Date().toISOString();
     const updatedAt =
       chunks.at(-1)?.message.timestamp ??
       chunks[0]?.message.timestamp ??
@@ -1029,36 +1327,697 @@ async function appendToCodexMirror(
   return { appendedCount, nextWatermarks, finalCount: count };
 }
 
-export async function syncSourceSessionToTargets(params: {
+const returnedOpenCodePrefix = "msg_b21d9e00";
+
+function returnedOpenCodeId(
+  codexId: string,
+  offset: number,
+  openCodeId: string,
+) {
+  return (
+    returnedOpenCodePrefix +
+    deterministicUuid(`${codexId}:${offset}:${openCodeId}`)
+      .replaceAll("-", "")
+      .slice(8)
+  );
+}
+
+function linkedImportOffset(
+  conversation: BridgeConversation,
+  tool: Exclude<ToolName, "opencode">,
+): number {
+  const prefix = conversation.mirrors.opencode?.exportPrefix;
+  return conversation.lastWrittenOffsets.reduce(
+    (offset, watermark) =>
+      watermark.sourceTool === "opencode" &&
+      watermark.targetTool === tool &&
+      watermark.targetSessionId === conversation.mirrors[tool]?.nativeId
+        ? Math.max(offset, watermark.targetOffset)
+        : offset,
+    prefix?.linkedOffset ??
+      (tool === "codex" ? prefix?.codexOffset : undefined) ??
+      conversation.mirrors[tool]?.seededSourceOffset ??
+      0,
+  );
+}
+
+async function withRegistryWriteLock<T>(
+  registryPath: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const lockPath = `${registryPath}.write-lock`;
+  await mkdir(dirname(registryPath), { recursive: true });
+  try {
+    await mkdir(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(
+        "Bridge registry write is locked; retry when the other operation finishes",
+      );
+    }
+    throw error;
+  }
+  try {
+    return await run();
+  } finally {
+    await rmdir(lockPath);
+  }
+}
+
+export function returnLinkedTurnsToOpenCode(
+  params: Parameters<typeof returnLinkedTurnsUnderLock>[0],
+): Promise<number> {
+  return withRegistryWriteLock(params.registryPath, () =>
+    returnLinkedTurnsUnderLock(params),
+  );
+}
+
+export function returnCodexTurnsToOpenCode(
+  params: Omit<
+    Parameters<typeof returnLinkedTurnsUnderLock>[0],
+    "tool" | "sessionId"
+  > & {
+    codexSessionId: string;
+  },
+): Promise<number> {
+  return returnLinkedTurnsToOpenCode({
+    ...params,
+    tool: "codex",
+    sessionId: params.codexSessionId,
+  });
+}
+
+export function syncSourceSessionToTargets(
+  params: Parameters<typeof syncSourceSessionUnderLock>[0],
+): Promise<SyncSourceSessionResult> {
+  return withRegistryWriteLock(params.registryPath, () =>
+    syncSourceSessionUnderLock(params),
+  );
+}
+
+export function syncOpenCodeSession(params: {
+  registryPath: string;
+  homeDir: string;
+  databasePath: string;
+  version: string;
+  sessionId: string;
+  outboundOnly?: boolean;
+}) {
+  return withRegistryWriteLock(params.registryPath, async () => {
+    const registry = await loadRegistry(params.registryPath, { readFile });
+    const linked = findConversationByNativeSession(
+      registry,
+      "opencode",
+      params.sessionId,
+    );
+    const mirror = linked?.mirrors.opencode;
+    if (
+      mirror?.openCodeDatabasePath &&
+      mirror.openCodeDatabasePath !== params.databasePath
+    )
+      throw new Error("OpenCode session is linked to a different database");
+    const tool = mirror?.seedTool ?? "codex";
+    const sendBack = (sessionId: string) =>
+      returnLinkedTurnsUnderLock({
+        registryPath: params.registryPath,
+        tool,
+        sessionId,
+        databasePath: params.databasePath,
+        version: params.version,
+      });
+    if (params.outboundOnly) {
+      const source = linked?.mirrors[tool];
+      if (!source || !mirror?.openCodeDatabasePath)
+        throw new Error(
+          "Outbound sync requires a session linked to this OpenCode database",
+        );
+      return {
+        tool,
+        write: { targetSessionId: source.nativeId, appendedCount: 0 },
+        returned: await sendBack(source.nativeId),
+      };
+    }
+    const result = await syncSourceSessionUnderLock({
+      sourceTool: "opencode",
+      sourcePath: params.databasePath,
+      sourceSessionId: params.sessionId,
+      openCodeDatabaseVersion: params.version,
+      targetTools: [tool],
+      registryPath: params.registryPath,
+      homeDir: params.homeDir,
+    });
+    const write = result.writes[0]!;
+    const returned =
+      linked?.mirrors[tool] && write.appendedCount === 0
+        ? await sendBack(write.targetSessionId)
+        : 0;
+    return { tool, write, returned };
+  });
+}
+
+export async function createOpenCodeSeed(
+  tool: Exclude<ToolName, "opencode">,
+  path: string,
+  cwd: string,
+  allowIncompleteTools = false,
+) {
+  return buildOpenCodeSeed(
+    tool,
+    await loadSourceSessionSnapshot(tool, path),
+    cwd,
+    allowIncompleteTools,
+  );
+}
+
+const importedOpenCodeModel = { providerID: "openai", id: "codex-import" };
+const importedOpenCodeTokens = {
+  input: 0,
+  output: 0,
+  reasoning: 0,
+  cache: { read: 0, write: 0 },
+};
+
+class IncompleteOpenCodeToolHistory extends Error {}
+
+function renderOpenCodeHistory(
+  chunks: SourceMessageChunk[],
+  idForOffset: (offset: number) => string,
+  allowIncompleteTools = false,
+) {
+  const pendingCalls = new Set<string>();
+  const messages = chunks.map(({ message, sourceOffset }) => {
+    const content = message.content.map((block) => {
+      if (block.type === "text") return block;
+      if (block.type === "thinking")
+        return { type: "text" as const, text: "[Source reasoning omitted]" };
+      if (block.type === "image")
+        return {
+          type: "text" as const,
+          text: "[Source image omitted; see the original session]",
+        };
+      let issue: string | undefined;
+      if (block.type === "tool_call") {
+        if (pendingCalls.has(block.id)) issue = "Duplicate tool call";
+        pendingCalls.add(block.id);
+      } else if (block.type === "tool_result") {
+        if (!pendingCalls.delete(block.toolCallId))
+          issue = "Tool result without a matching call";
+      }
+      if (issue && !allowIncompleteTools)
+        throw new IncompleteOpenCodeToolHistory(
+          `${issue} in OpenCode transcript`,
+        );
+      return {
+        type: "text" as const,
+        text:
+          (allowIncompleteTools
+            ? `Historical tool record (${issue ?? "status unverified"}): `
+            : "Historical tool record (already settled): ") +
+          JSON.stringify(block),
+      };
+    });
+    if (!content.length)
+      content.push({ type: "text", text: "[Empty source message]" });
+    const id = idForOffset(sourceOffset);
+    const created = Date.parse(message.timestamp);
+    if (!Number.isFinite(created))
+      throw new Error("Invalid source message time");
+    return message.role === "user" &&
+      !message.content.every((item) => item.type === "tool_result")
+      ? {
+          id,
+          type: "user" as const,
+          time: { created },
+          text: content.map((item) => item.text).join("\n"),
+        }
+      : {
+          id,
+          type: "assistant" as const,
+          time: { created, completed: created },
+          agent: "build",
+          model: {
+            id: importedOpenCodeModel.id,
+            providerID: importedOpenCodeModel.providerID,
+          },
+          content,
+          finish: "stop",
+          cost: 0,
+          tokens: importedOpenCodeTokens,
+        };
+  });
+  if (pendingCalls.size && !allowIncompleteTools)
+    throw new IncompleteOpenCodeToolHistory(
+      "Unsettled tool calls in OpenCode transcript",
+    );
+  return messages;
+}
+
+function buildOpenCodeSeed(
+  tool: Exclude<ToolName, "opencode">,
+  snapshot: SourceSessionSnapshot,
+  cwd: string,
+  allowIncompleteTools = false,
+) {
+  if (!snapshot.chunks.length)
+    throw new Error("Source session has no supported messages");
+  if (tool === "codex" && !isCodexThreadId(snapshot.sourceSessionId)) {
+    throw new Error("OpenCode sync requires a native Codex thread ID");
+  }
+  const seed = `${tool}:${snapshot.sourceSessionId}`;
+  const id = "ses_" + deterministicUuid(seed).replaceAll("-", "");
+  const idForOffset = (offset: number) =>
+    "msg_" + deterministicUuid(`${seed}:${offset}`).replaceAll("-", "");
+  let messages;
+  try {
+    messages = renderOpenCodeHistory(snapshot.chunks, idForOffset);
+  } catch (error) {
+    if (
+      !allowIncompleteTools ||
+      !(error instanceof IncompleteOpenCodeToolHistory)
+    )
+      throw error;
+    messages = renderOpenCodeHistory(snapshot.chunks, idForOffset, true);
+  }
+  const created = messages[0]!.time.created;
+  return {
+    info: {
+      id,
+      projectID: "global",
+      title: "Imported " + tool + " conversation",
+      agent: "build",
+      model: importedOpenCodeModel,
+      tokens: importedOpenCodeTokens,
+      cost: 0,
+      location: { directory: cwd },
+      time: {
+        created,
+        updated: messages.reduce(
+          (latest, message) => Math.max(latest, message.time.created),
+          created,
+        ),
+      },
+    },
+    messages,
+  };
+}
+
+export async function readSeedSourceId(
+  tool: Exclude<ToolName, "opencode">,
+  path: string,
+): Promise<string | undefined> {
+  for await (const record of iterateCodexRollout(path)) {
+    const item = record as unknown as {
+      type: string;
+      id?: unknown;
+      sessionId?: unknown;
+      payload?: { id?: unknown };
+    };
+    const id =
+      tool === "claude"
+        ? item.sessionId
+        : tool === "pi" && item.type === "session"
+          ? item.id
+          : tool === "codex" && item.type === "session_meta"
+            ? item.payload?.id
+            : undefined;
+    if (typeof id === "string") return id;
+  }
+}
+
+export async function seedLinkedSessionInOpenCode(params: {
+  tool: Exclude<ToolName, "opencode">;
+  sourcePath: string;
+  expectedSourceId?: string;
+  cwd?: string;
+  fallbackCwd?: string;
+  allowIncompleteTools?: boolean;
+  databasePath: string;
+  registryPath: string;
+  importVerified: (
+    bundle: ReturnType<typeof buildOpenCodeSeed>,
+    alreadyLinked: boolean,
+  ) => Promise<void>;
+}) {
+  return withRegistryWriteLock(params.registryPath, async () => {
+    const { tool } = params;
+    const source = await loadSourceSessionSnapshot(tool, params.sourcePath);
+    if (
+      params.expectedSourceId &&
+      source.sourceSessionId !== params.expectedSourceId
+    )
+      throw new Error("Source session identity changed during backfill");
+
+    const cwd =
+      params.cwd ??
+      (await realpath(source.cwd).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" && params.fallbackCwd)
+          return params.fallbackCwd;
+        if (error.code === "ENOENT")
+          throw new Error(
+            "Source project directory is missing; supply --target-cwd with an existing fallback",
+            { cause: error },
+          );
+        throw error;
+      }));
+    if (!(await stat(cwd)).isDirectory())
+      throw new Error("Source project must be a directory");
+    const bundle = buildOpenCodeSeed(
+      tool,
+      source,
+      cwd,
+      params.allowIncompleteTools,
+    );
+    const registry = await loadRegistry(params.registryPath, { readFile });
+    const linked = findConversationByNativeSession(
+      registry,
+      tool,
+      source.sourceSessionId,
+    );
+    const existing = findConversationByNativeSession(
+      registry,
+      "opencode",
+      bundle.info.id,
+    );
+    if (
+      (linked?.mirrors.opencode &&
+        linked.mirrors.opencode.nativeId !== bundle.info.id) ||
+      (linked?.mirrors.opencode?.openCodeDatabasePath &&
+        linked.mirrors.opencode.openCodeDatabasePath !== params.databasePath) ||
+      (existing && existing.bridgeSessionId !== linked?.bridgeSessionId) ||
+      (linked && linked.canonicalCwd !== cwd) ||
+      (linked?.mirrors[tool]?.sessionPath &&
+        linked.mirrors[tool].sessionPath !== params.sourcePath)
+    ) {
+      throw new Error(
+        "Source or destination already belongs to a different bridge link",
+      );
+    }
+    await params.importVerified(bundle, Boolean(existing));
+    if (existing) return bundle;
+
+    const { projectKey, canonicalCwd } = await deriveProjectKey(cwd, {
+      realpath,
+      findRepoRoot: async (cwd) => findGitRepoRoot(cwd, { exists }),
+    });
+    const conversation =
+      linked ??
+      createConversation(
+        projectKey,
+        canonicalCwd,
+        tool,
+        source.sourceSessionId,
+        params.sourcePath,
+        source.updatedAt,
+      );
+    const offset = source.chunks.at(-1)!.sourceOffset;
+    conversation.mirrors[tool]!.seedPrefix = {
+      offset,
+      digest: sourcePrefixDigest(source, offset),
+    };
+    conversation.mirrors.opencode = {
+      seedTool: tool,
+      openCodeDatabasePath: params.databasePath,
+      sessionPath: params.databasePath,
+      nativeId: bundle.info.id,
+      seededSourceOffset: bundle.messages.length,
+      exportPrefix: {
+        count: bundle.messages.length,
+        digest: chunkDigest(normalizeOpenCodeMessages(bundle.messages)),
+        linkedOffset: offset,
+        lastNativeOffset: 0,
+      },
+    };
+    await saveRegistry(
+      params.registryPath,
+      upsertConversation(registry, conversation),
+      {
+        mkdir: async (path, options) => {
+          await mkdir(path, options);
+        },
+        writeFile,
+        rename,
+      },
+    );
+    return bundle;
+  });
+}
+
+function sourcePrefixDigest(
+  snapshot: SourceSessionSnapshot,
+  offset: number,
+): string {
+  return chunkDigest(
+    snapshot.chunks.filter((chunk) => chunk.sourceOffset <= offset),
+  );
+}
+
+function chunkDigest(chunks: Iterable<SourceMessageChunk>): string {
+  const hash = createHash("sha256").update("[");
+  let first = true;
+  for (const chunk of chunks) {
+    if (!first) hash.update(",");
+    first = false;
+    hash.update(JSON.stringify(chunk));
+  }
+  return hash.update("]").digest("hex");
+}
+
+function verifySeedPrefix(
+  mirror: ToolMirror,
+  snapshot: SourceSessionSnapshot,
+): void {
+  const prefix = mirror.seedPrefix;
+  if (prefix && prefix.digest !== sourcePrefixDigest(snapshot, prefix.offset)) {
+    throw new Error(
+      `Original ${snapshot.sourceTool === "codex" ? "Codex" : snapshot.sourceTool} seed history diverged`,
+    );
+  }
+}
+
+async function resolveLinkedSessionPath(
+  tool: Exclude<ToolName, "opencode">,
+  mirror: ToolMirror,
+): Promise<string> {
+  if (
+    tool !== "codex" ||
+    !mirror.seedPrefix ||
+    !mirror.sessionPath.endsWith(".jsonl.zst")
+  )
+    return mirror.sessionPath;
+  const reopened = mirror.sessionPath.slice(0, -4);
+  const candidate = await lstat(reopened).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  return candidate?.isFile() ? reopened : mirror.sessionPath;
+}
+
+async function returnLinkedTurnsUnderLock(params: {
+  registryPath: string;
+  tool: Exclude<ToolName, "opencode">;
+  sessionId: string;
+  databasePath: string;
+  version: string;
+}): Promise<number> {
+  const { readOpenCodeRows, appendOpenCodeMessages } =
+    await import("./opencode-store.js");
+  const registry = await loadRegistry(params.registryPath, { readFile });
+  const conversation = findConversationByNativeSession(
+    registry,
+    params.tool,
+    params.sessionId,
+  );
+  const source = conversation?.mirrors[params.tool];
+  const target = conversation?.mirrors.opencode;
+  if (
+    !source ||
+    !target?.exportPrefix ||
+    (target.seedTool ?? "codex") !== params.tool ||
+    (target.openCodeDatabasePath &&
+      target.openCodeDatabasePath !== (await realpath(params.databasePath)))
+  ) {
+    throw new Error("Expected a linked OpenCode session");
+  }
+  if (
+    getMaxSyncedSourceOffset(
+      conversation.lastWrittenOffsets,
+      "opencode",
+      target.nativeId,
+      params.tool,
+      source.nativeId,
+    ) !== (target.exportPrefix.lastNativeOffset ?? target.exportPrefix.count)
+  ) {
+    throw new Error(
+      "Linked session must contain the latest imported OpenCode history",
+    );
+  }
+  const snapshot = await loadSourceSessionSnapshot(
+    params.tool,
+    await resolveLinkedSessionPath(params.tool, source),
+  );
+  if (snapshot.sourceSessionId !== params.sessionId)
+    throw new Error("Linked session identity changed");
+  verifySeedPrefix(source, snapshot);
+  const turns = snapshot.chunks.filter(
+    (chunk) =>
+      chunk.sourceOffset > linkedImportOffset(conversation, params.tool),
+  );
+  const { rows, cursor } = readOpenCodeRows(
+    params.databasePath,
+    params.version,
+    target.nativeId,
+  );
+  const { count, digest } = target.exportPrefix;
+  if (rows.length < count) throw new Error("OpenCode history diverged");
+  const prefix = (function* () {
+    for (let index = 0; index < count; index++) {
+      const row = rows[index]!;
+      yield* normalizeOpenCodeMessages(
+        [
+          {
+            ...JSON.parse(row.data),
+            type: row.type,
+            id: row.id,
+          },
+        ],
+        index,
+      );
+    }
+  })();
+  if (chunkDigest(prefix) !== digest) {
+    throw new Error("OpenCode history diverged");
+  }
+  const existing = rows.slice(count);
+  if (existing.length > turns.length)
+    throw new Error("OpenCode history diverged");
+  const records = renderOpenCodeHistory(turns, (offset) =>
+    returnedOpenCodeId(source.nativeId, offset, target.nativeId),
+  );
+  const pending = [];
+  for (const [index, { id, type, ...body }] of records.entries()) {
+    const time = body.time.created;
+    const data = JSON.stringify(body);
+    const prior = existing[index];
+    if (prior) {
+      if (prior.id !== id || prior.type !== type || prior.data !== data)
+        throw new Error("OpenCode history diverged");
+    } else {
+      pending.push({
+        id,
+        type,
+        time_created: time,
+        time_updated: time,
+        seq: Math.max(cursor, rows.at(-1)?.seq ?? 0) + pending.length + 1,
+        data,
+      });
+    }
+  }
+  if (!pending.length) return 0;
+  return appendOpenCodeMessages(
+    params.databasePath,
+    params.version,
+    target.nativeId,
+    rows,
+    pending,
+  );
+}
+
+export async function loadOpenCodeDatabaseSnapshot(
+  path: string,
+  version: string,
+  id: string,
+): Promise<SourceSessionSnapshot> {
+  const { visitOpenCodeSessionRows } = await import("./opencode-store.js");
+  const chunks: SourceMessageChunk[] = [];
+  let rawMessageCount = 0;
+  let omittedSystemRecords = 0;
+  const session = visitOpenCodeSessionRows(path, version, id, (entry) => {
+    if ((entry as { type: string }).type === "system")
+      omittedSystemRecords += 1;
+    const [chunk] = normalizeOpenCodeMessages([entry], rawMessageCount++);
+    if (chunk) chunks.push(chunk);
+  });
+  return {
+    sourceTool: "opencode",
+    sourcePath: path,
+    sourceSessionId: id,
+    cwd: session.directory,
+    updatedAt: session.updatedAt,
+    chunks,
+    rawMessageCount,
+    omittedSystemRecords,
+  };
+}
+
+async function syncSourceSessionUnderLock(params: {
   sourceTool: ToolName;
   sourcePath: string;
   sourceSessionId?: string;
+  openCodeDatabaseVersion?: string;
+  targetCwd?: string;
   registryPath: string;
   homeDir: string;
   now?: Date;
   targetTools?: ToolName[];
 }): Promise<SyncSourceSessionResult> {
+  if (params.targetTools?.includes("opencode")) {
+    throw new Error("OpenCode target sync is not available");
+  }
   const now = params.now ?? new Date();
-  const snapshot = await loadSourceSessionSnapshot(
-    params.sourceTool,
-    params.sourcePath,
-    params.sourceSessionId,
-  );
+  const snapshot =
+    params.sourceTool === "opencode" &&
+    params.openCodeDatabaseVersion &&
+    params.sourceSessionId
+      ? await loadOpenCodeDatabaseSnapshot(
+          params.sourcePath,
+          params.openCodeDatabaseVersion,
+          params.sourceSessionId,
+        )
+      : await loadSourceSessionSnapshot(
+          params.sourceTool,
+          params.sourcePath,
+          params.sourceSessionId,
+        );
+  if (params.openCodeDatabaseVersion && !snapshot.chunks.length)
+    throw new Error("OpenCode session has no supported messages");
   const registry = await loadRegistry(params.registryPath, { readFile });
-  const { canonicalCwd, projectKey } = await deriveProjectKey(snapshot.cwd, {
+  const linked = findConversationByNativeSession(
+    registry,
+    params.sourceTool,
+    snapshot.sourceSessionId,
+  );
+  const mirrorCwd =
+    params.targetCwd ??
+    (params.sourceTool === "opencode" ? linked?.canonicalCwd : undefined) ??
+    snapshot.cwd;
+  const { canonicalCwd, projectKey } = await deriveProjectKey(mirrorCwd, {
     realpath,
-    findRepoRoot: async (cwd) =>
-      findGitRepoRoot(cwd, {
-        exists,
-      }),
+    findRepoRoot: async (cwd) => findGitRepoRoot(cwd, { exists }),
+  }).catch((error: NodeJS.ErrnoException) => {
+    if (params.sourceTool === "opencode" && error.code === "ENOENT") {
+      throw new Error(
+        params.targetCwd
+          ? "Target project directory is missing"
+          : "Source project directory is missing; supply --target-cwd with an existing project",
+        { cause: error },
+      );
+    }
+    throw error;
   });
+  if (
+    params.targetCwd &&
+    (!(await stat(canonicalCwd)).isDirectory() ||
+      (linked && linked.canonicalCwd !== canonicalCwd))
+  ) {
+    throw new Error(
+      "Target project must be a directory and match the existing mirror location",
+    );
+  }
 
   let conversation =
-    findConversationByNativeSession(
-      registry,
-      params.sourceTool,
-      snapshot.sourceSessionId,
-    ) ??
+    linked ??
     createConversation(
       projectKey,
       canonicalCwd,
@@ -1069,14 +2028,17 @@ export async function syncSourceSessionToTargets(params: {
     );
 
   const seededSourceOffset =
-    conversation.mirrors[params.sourceTool]?.nativeId === snapshot.sourceSessionId
+    conversation.mirrors[params.sourceTool]?.nativeId ===
+    snapshot.sourceSessionId
       ? conversation.mirrors[params.sourceTool]?.seededSourceOffset
       : undefined;
   const sourceChunks =
     typeof seededSourceOffset === "number"
-      ? snapshot.chunks.filter((chunk) => chunk.sourceOffset > seededSourceOffset)
+      ? snapshot.chunks.filter(
+          (chunk) => chunk.sourceOffset > seededSourceOffset,
+        )
       : snapshot.chunks;
-  const authoredSourceChunks = sourceChunks.filter(
+  let authoredSourceChunks = sourceChunks.filter(
     (chunk) =>
       !isImportedMirrorChunk({
         watermarks: conversation.lastWrittenOffsets,
@@ -1094,12 +2056,106 @@ export async function syncSourceSessionToTargets(params: {
     snapshot.updatedAt,
   );
 
+  if (params.sourceTool === "opencode") {
+    const mirror = conversation.mirrors.opencode!;
+    if (params.openCodeDatabaseVersion) {
+      if (
+        mirror.openCodeDatabasePath &&
+        mirror.openCodeDatabasePath !== params.sourcePath
+      )
+        throw new Error("OpenCode session is linked to a different database");
+      mirror.openCodeDatabasePath = params.sourcePath;
+    }
+    const digest = (count: number) => sourcePrefixDigest(snapshot, count);
+    const prefix = mirror.exportPrefix;
+    if (
+      prefix &&
+      (prefix.count > snapshot.rawMessageCount! ||
+        prefix.digest !== digest(prefix.count))
+    ) {
+      throw new Error("OpenCode export history diverged");
+    }
+    const suffix = snapshot.chunks.filter(
+      (chunk) => chunk.sourceOffset > (prefix?.count ?? 0),
+    );
+    const returned = suffix.filter(({ message }) =>
+      message.id.startsWith(returnedOpenCodePrefix),
+    );
+    const tool = mirror.seedTool ?? "codex";
+    const linkedMirror = conversation.mirrors[tool];
+    if (
+      mirror.seedTool &&
+      params.targetTools &&
+      !params.targetTools.includes(tool)
+    )
+      throw new Error(
+        `OpenCode seed must sync with its original ${tool} session`,
+      );
+    let linkedOffset = linkedImportOffset(conversation, tool);
+    if ((suffix.length || linkedMirror?.seedPrefix) && linkedMirror) {
+      const linkedPath = await resolveLinkedSessionPath(tool, linkedMirror);
+      const linkedSnapshot = await loadSourceSessionSnapshot(tool, linkedPath);
+      if (linkedSnapshot.sourceSessionId !== linkedMirror.nativeId)
+        throw new Error("Linked session identity changed");
+      verifySeedPrefix(linkedMirror, linkedSnapshot);
+      linkedMirror.sessionPath = linkedPath;
+      const pending = linkedSnapshot.chunks.filter(
+        (chunk) => chunk.sourceOffset > linkedOffset,
+      );
+      if (suffix.length) {
+        const expected =
+          pending.length === returned.length
+            ? normalizeOpenCodeMessages(
+                renderOpenCodeHistory(pending, (offset) =>
+                  returnedOpenCodeId(
+                    linkedMirror.nativeId,
+                    offset,
+                    mirror.nativeId,
+                  ),
+                ),
+              )
+            : [];
+        if (
+          pending.length !== returned.length ||
+          expected.some(
+            ({ message }, index) =>
+              JSON.stringify(message) !==
+              JSON.stringify(returned[index]?.message),
+          )
+        ) {
+          throw new Error(
+            `OpenCode and ${tool === "codex" ? "Codex" : tool} histories diverged`,
+          );
+        }
+      }
+      if (suffix.length)
+        linkedOffset = pending.at(-1)?.sourceOffset ?? linkedOffset;
+    } else if (returned.length) {
+      throw new Error("OpenCode export contains unlinked returned turns");
+    }
+    authoredSourceChunks = authoredSourceChunks.filter(
+      ({ message }) => !message.id.startsWith(returnedOpenCodePrefix),
+    );
+    mirror.exportPrefix = {
+      count: snapshot.rawMessageCount!,
+      digest: digest(snapshot.rawMessageCount!),
+      linkedOffset,
+      lastNativeOffset: authoredSourceChunks.at(-1)?.sourceOffset ?? 0,
+    };
+  }
+
   const targetTools = (params.targetTools ?? ["pi", "claude", "codex"]).filter(
     (tool) => tool !== params.sourceTool,
   );
   const writes: SyncWriteResult[] = [];
 
   for (const targetTool of targetTools) {
+    const seedTool = conversation.mirrors.opencode?.seedTool;
+    const initialCrossHarnessHistory =
+      params.sourceTool === "opencode" &&
+      seedTool &&
+      targetTool !== seedTool &&
+      !conversation.mirrors[targetTool];
     const mirror = await ensureTargetMirror(
       conversation,
       targetTool,
@@ -1121,15 +2177,15 @@ export async function syncSourceSessionToTargets(params: {
       targetTool,
       mirror.nativeId,
     );
-    const targetChunks = authoredSourceChunks.filter(
-      (chunk) => chunk.sourceOffset > targetSourceOffset,
-    );
+    const targetChunks = (
+      initialCrossHarnessHistory ? snapshot.chunks : authoredSourceChunks
+    ).filter((chunk) => chunk.sourceOffset > targetSourceOffset);
 
     const writeResult =
       targetTool === "pi"
         ? await appendToPiMirror(
             mirror,
-            snapshot.cwd,
+            mirrorCwd,
             params.sourceTool,
             snapshot.sourceSessionId,
             targetChunks,
@@ -1138,7 +2194,7 @@ export async function syncSourceSessionToTargets(params: {
         : targetTool === "claude"
           ? await appendToClaudeMirror(
               mirror,
-              snapshot.cwd,
+              mirrorCwd,
               params.sourceTool,
               snapshot.sourceSessionId,
               targetChunks,
@@ -1146,7 +2202,7 @@ export async function syncSourceSessionToTargets(params: {
             )
           : await appendToCodexMirror(
               mirror,
-              snapshot.cwd,
+              mirrorCwd,
               params.homeDir,
               params.sourceTool,
               snapshot.sourceSessionId,
@@ -1186,10 +2242,7 @@ export async function syncSourceSessionToTargets(params: {
     writeFile: async (path, data) => {
       await writeFile(path, data, "utf8");
     },
-    rename: async (from, to) => {
-      const content = await readFile(from, "utf8");
-      await writeFile(to, content, "utf8");
-    },
+    rename,
   });
 
   return {
@@ -1235,7 +2288,8 @@ async function readSessionCandidate(
         id: session.header.id,
         path,
         sourceTool: "pi",
-        updatedAt: session.entries.at(-1)?.timestamp ?? session.header.timestamp,
+        updatedAt:
+          session.entries.at(-1)?.timestamp ?? session.header.timestamp,
       };
     }
 
@@ -1267,9 +2321,8 @@ async function readSessionCandidate(
     const meta = items.find((item) => item.type === "session_meta");
     return {
       id:
-        (typeof meta?.payload.id === "string"
-          ? meta.payload.id
-          : undefined) ?? deterministicUuid(path),
+        (typeof meta?.payload.id === "string" ? meta.payload.id : undefined) ??
+        deterministicUuid(path),
       path,
       sourceTool: "codex",
       updatedAt:
@@ -1324,7 +2377,9 @@ export async function listSessionCandidatesForProject(
         : await walkJsonlFiles(join(homeDir, ".codex", "sessions"));
   const candidates = (
     await Promise.all(
-      files.map((path) => readSessionCandidate(tool, path, canonicalProjectKey)),
+      files.map((path) =>
+        readSessionCandidate(tool, path, canonicalProjectKey),
+      ),
     )
   )
     .filter(isSessionCandidate)
@@ -1358,6 +2413,7 @@ export async function importLatestSessionToTarget(params: {
   homeDir: string;
   registryPath: string;
   now?: Date;
+  dryRun?: boolean;
 }): Promise<{
   imported: boolean;
   candidate: SessionCandidate | null;
@@ -1371,8 +2427,10 @@ export async function importLatestSessionToTarget(params: {
       }),
   });
   const registry = await loadRegistry(params.registryPath, { readFile });
-  const linkedConversations = findConversationsByProjectKey(registry, projectKey)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const linkedConversations = findConversationsByProjectKey(
+    registry,
+    projectKey,
+  ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const linkedConversation =
     linkedConversations.length === 1 ? linkedConversations[0] : undefined;
   const candidates = await listForeignSessionCandidates(
@@ -1385,6 +2443,8 @@ export async function importLatestSessionToTarget(params: {
   if (!candidate) {
     return { imported: false, candidate: null };
   }
+
+  if (params.dryRun) return { imported: false, candidate };
 
   const result = await syncSourceSessionToTargets({
     sourceTool: candidate.sourceTool,

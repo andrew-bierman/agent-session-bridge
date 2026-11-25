@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 
-const runPiSessionImport = vi.fn();
-const runPiMessageSync = vi.fn();
+const runPiSessionImport = mock();
+const runPiMessageSync = mock();
 
-vi.mock("../src/index.js", () => ({
+mock.module("../src/index.js", () => ({
   handleMessageEnd: <T>(entry: T) => entry,
   restorePiBridgeState: (raw: string) => JSON.parse(raw),
   runPiMessageSync,
@@ -13,7 +13,6 @@ vi.mock("../src/index.js", () => ({
 
 describe("pi runtime entry", () => {
   beforeEach(() => {
-    vi.resetModules();
     runPiSessionImport.mockReset();
     runPiMessageSync.mockReset();
   });
@@ -40,12 +39,18 @@ describe("pi runtime entry", () => {
     });
 
     const { default: agentSessionBridge } = await import("../index.ts");
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
-    const appendEntry = vi.fn();
+    const handlers = new Map<
+      string,
+      (event: unknown, ctx: unknown) => Promise<void>
+    >();
+    const appendEntry = mock();
 
     agentSessionBridge({
       appendEntry,
-      on(event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+      on(
+        event: string,
+        handler: (event: unknown, ctx: unknown) => Promise<void>,
+      ) {
         handlers.set(event, handler);
       },
       registerCommand() {},
@@ -87,38 +92,44 @@ describe("pi runtime entry", () => {
   it("suppresses missing-session warnings and retries sync on turn_end", async () => {
     runPiSessionImport.mockResolvedValue({ imported: false });
     const enoent = Object.assign(
-      new Error("ENOENT: no such file or directory, stat '/tmp/pi-session.jsonl'"),
+      new Error(
+        "ENOENT: no such file or directory, stat '/tmp/pi-session.jsonl'",
+      ),
       { code: "ENOENT" },
     );
-    runPiMessageSync
-      .mockRejectedValueOnce(enoent)
-      .mockResolvedValueOnce({
-        conversation: {
-          bridgeSessionId: "bridge-1",
-          projectKey: "/repo/demo",
-          canonicalCwd: "/repo/demo",
-          createdAt: "2026-04-05T10:00:00.000Z",
-          updatedAt: "2026-04-05T10:00:00.000Z",
-          status: "active",
-          mirrors: {
-            claude: {
-              nativeId: "claude-1",
-              sessionPath: "/tmp/claude-1.jsonl",
-            },
+    runPiMessageSync.mockRejectedValueOnce(enoent).mockResolvedValueOnce({
+      conversation: {
+        bridgeSessionId: "bridge-1",
+        projectKey: "/repo/demo",
+        canonicalCwd: "/repo/demo",
+        createdAt: "2026-04-05T10:00:00.000Z",
+        updatedAt: "2026-04-05T10:00:00.000Z",
+        status: "active",
+        mirrors: {
+          claude: {
+            nativeId: "claude-1",
+            sessionPath: "/tmp/claude-1.jsonl",
           },
-          lastWrittenOffsets: [],
         },
-        writes: [],
-      });
+        lastWrittenOffsets: [],
+      },
+      writes: [],
+    });
 
     const { default: agentSessionBridge } = await import("../index.ts");
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
-    const notify = vi.fn();
-    const appendEntry = vi.fn();
+    const handlers = new Map<
+      string,
+      (event: unknown, ctx: unknown) => Promise<void>
+    >();
+    const notify = mock();
+    const appendEntry = mock();
 
     agentSessionBridge({
       appendEntry,
-      on(event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+      on(
+        event: string,
+        handler: (event: unknown, ctx: unknown) => Promise<void>,
+      ) {
         handlers.set(event, handler);
       },
       registerCommand() {},

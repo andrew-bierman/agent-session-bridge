@@ -32,7 +32,7 @@ const codexBootstrapPrefixes = [
   "<apps_instructions>",
   "<skills_instructions>",
   "<plugins_instructions>",
-  "# AGENTS.md instructions for ",
+  "# AGENTS.md instructions",
   "<environment_context>",
   "<turn_aborted>",
   "When you write or edit a git commit message, ensure the message ends with this trailer exactly once:",
@@ -210,9 +210,10 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "tool_result" &&
     typeof candidate.tool_use_id === "string"
   ) {
-    const output = typeof candidate.content === "string"
-      ? candidate.content
-      : serializeUnknownText(candidate.content);
+    const output =
+      typeof candidate.content === "string"
+        ? candidate.content
+        : serializeUnknownText(candidate.content);
     if (output === null) {
       return [];
     }
@@ -230,9 +231,10 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "function_call_output" &&
     typeof candidate.call_id === "string"
   ) {
-    const output = typeof candidate.output === "string"
-      ? candidate.output
-      : serializeUnknownText(candidate.output);
+    const output =
+      typeof candidate.output === "string"
+        ? candidate.output
+        : serializeUnknownText(candidate.output);
     if (output === null) {
       return [];
     }
@@ -355,6 +357,13 @@ export function convertPiEntryToNormalized(
     return null;
   }
 
+  // A system record is not a conversation turn. Pi writes an empty one at the
+  // start of every session; mapping it to a user message would send an empty
+  // user text block, which the Anthropic API rejects.
+  if (role === "system") {
+    return null;
+  }
+
   if (role === "toolResult") {
     return {
       id: entry.id ?? "pi-tool-result",
@@ -366,7 +375,7 @@ export function convertPiEntryToNormalized(
           toolCallId: String(message.toolCallId ?? ""),
           toolName:
             typeof message.toolName === "string" ? message.toolName : undefined,
-          output: JSON.stringify(message.content ?? []),
+          output: piToolResultOutput(message.content),
           isError: Boolean(message.isError),
         },
       ],
@@ -437,7 +446,8 @@ export function convertCodexItemToNormalized(
   item: CodexRolloutItem,
 ): NormalizedMessage | null {
   if (item.type === "response_item" && item.payload.type === "message") {
-    const role = item.payload.role === "assistant" ? "assistant" : "user";
+    const role = item.payload.role;
+    if (role !== "user" && role !== "assistant") return null;
     const normalized: NormalizedMessage = {
       id:
         typeof item.payload.id === "string"
@@ -463,7 +473,44 @@ export function convertCodexItemToNormalized(
 
   if (
     item.type === "response_item" &&
-    item.payload.type === "function_call_output"
+    (item.payload.type === "function_call" ||
+      item.payload.type === "custom_tool_call")
+  ) {
+    const { call_id, name, type, input } = item.payload;
+    if (typeof call_id !== "string" || typeof name !== "string") return null;
+    const raw = item.payload.arguments;
+    let args = raw;
+    if (typeof raw === "string") {
+      try {
+        args = JSON.parse(raw);
+      } catch {
+        args = raw;
+      }
+    }
+    return {
+      id: call_id,
+      role: "assistant",
+      timestamp: codexItemTimestamp(item),
+      content: [
+        {
+          type: "tool_call",
+          id: call_id,
+          name,
+          arguments:
+            type === "custom_tool_call"
+              ? { input }
+              : args && typeof args === "object" && !Array.isArray(args)
+                ? (args as Record<string, unknown>)
+                : { arguments: raw },
+        },
+      ],
+    };
+  }
+
+  if (
+    item.type === "response_item" &&
+    (item.payload.type === "function_call_output" ||
+      item.payload.type === "custom_tool_call_output")
   ) {
     return {
       id:
@@ -486,6 +533,28 @@ export function convertCodexItemToNormalized(
   }
 
   return null;
+}
+
+/**
+ * Pi stores a tool result as a content array. Text-only results become the
+ * plain text they carry (the reverse conversion wraps it back into one text
+ * block); anything else, such as an image, keeps its structure as JSON.
+ */
+function piToolResultOutput(content: unknown): string {
+  if (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(
+      (block) =>
+        block !== null &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )
+  ) {
+    return content.map((block) => (block as { text: string }).text).join("");
+  }
+  return JSON.stringify(content ?? []);
 }
 
 export function convertNormalizedToPiEntry(
@@ -603,51 +672,4 @@ export function convertNormalizedToClaudeLine(
       usage: message.usage,
     },
   };
-}
-
-export function convertNormalizedToCodexItems(
-  message: NormalizedMessage,
-): CodexRolloutItem[] {
-  return [
-    {
-      type: "response_item",
-      payload: {
-        id: message.id,
-        type: "message",
-        role: message.role === "tool" ? "assistant" : message.role,
-        timestamp: message.timestamp,
-        content: message.content.map((item) => {
-          if (item.type === "text") {
-            return {
-              type: message.role === "assistant" ? "output_text" : "input_text",
-              text: item.text,
-            };
-          }
-          if (item.type === "tool_call") {
-            return {
-              type: "function_call",
-              call_id: item.id,
-              name: item.name,
-              arguments: item.arguments,
-            };
-          }
-          if (item.type === "tool_result") {
-            return {
-              type: "function_call_output",
-              call_id: item.toolCallId,
-              output: item.output,
-            };
-          }
-          if (item.type === "thinking") {
-            return { type: "reasoning", text: item.thinking };
-          }
-          return {
-            type: "input_image",
-            data: item.data,
-            mimeType: item.mimeType,
-          };
-        }),
-      },
-    },
-  ];
 }

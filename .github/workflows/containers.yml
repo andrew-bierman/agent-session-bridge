@@ -1,0 +1,53 @@
+name: Containers
+
+# Hermetic integration tier: real Omnigent, Codex, Claude Code and Pi in an
+# offline container, with only the model responses scripted. Separate from CI so
+# the fast unit job never needs a container runtime. Runs when something it
+# exercises changes, on main, and nightly to catch drift in the pinned tools.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "containers/**"
+      - "scripts/**"
+      - "packages/core/src/**"
+      - "package.json"
+      - "bun.lock"
+      - ".github/workflows/containers.yml"
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CONTAINER_RUNTIME: docker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: canary
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Container tests
+        run: bun run test:containers
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: containers-report
+          path: |
+            ~/.cache/agent-session-bridge/containers/*/out/junit.xml
+            ~/.cache/agent-session-bridge/containers/*/out/artifacts/**
+          if-no-files-found: ignore

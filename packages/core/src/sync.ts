@@ -129,47 +129,54 @@ function convertMessageToCodexPayloads(
     });
   }
 
-  return [
-    {
+  // Codex stores a tool call and its output as their own top-level records, in
+  // order, never inside a message's content. Split the content into runs: text
+  // and images stay in messages, and each tool call or result becomes its own
+  // record between them.
+  const textType = message.role === "assistant" ? "output_text" : "input_text";
+  const payloads: Record<string, unknown>[] = [];
+  let run: Record<string, unknown>[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    payloads.push({
       type: "message",
       role: message.role,
-      content: message.content.map((item) => {
-        if (item.type === "text") {
-          return {
-            type: message.role === "assistant" ? "output_text" : "input_text",
-            text: item.text,
-          };
-        }
-        if (item.type === "thinking") {
-          return {
-            type: message.role === "assistant" ? "output_text" : "input_text",
-            text: item.thinking,
-          };
-        }
-        if (item.type === "tool_call") {
-          return {
-            type: "function_call",
-            call_id: item.id,
-            name: item.name,
-            arguments: item.arguments,
-          };
-        }
-        if (item.type === "tool_result") {
-          return {
-            type: "function_call_output",
-            call_id: item.toolCallId,
-            output: item.output,
-          };
-        }
-        return {
-          type: "input_image",
-          data: item.data,
-          mimeType: item.mimeType,
-        };
-      }),
+      content: run,
       ...(message.role === "assistant" ? { phase: "final_answer" } : {}),
-    },
-  ];
+    });
+    run = [];
+  };
+
+  for (const item of message.content) {
+    if (item.type === "text") {
+      run.push({ type: textType, text: item.text });
+    } else if (item.type === "thinking") {
+      run.push({ type: textType, text: item.thinking });
+    } else if (item.type === "tool_call") {
+      flush();
+      payloads.push({
+        type: "function_call",
+        call_id: item.id,
+        name: item.name,
+        arguments: JSON.stringify(item.arguments),
+      });
+    } else if (item.type === "tool_result") {
+      flush();
+      payloads.push({
+        type: "function_call_output",
+        call_id: item.toolCallId,
+        output: item.output,
+      });
+    } else {
+      run.push({
+        type: "input_image",
+        data: item.data,
+        mimeType: item.mimeType,
+      });
+    }
+  }
+  flush();
+  return payloads;
 }
 
 function groupMessagesForCodexTasks(
@@ -293,9 +300,7 @@ export function convertConversationToCodexRollout(
       [...group]
         .reverse()
         .flatMap((message) =>
-          message.role === "assistant"
-            ? [extractMessageText(message)]
-            : [],
+          message.role === "assistant" ? [extractMessageText(message)] : [],
         )
         .find((value): value is string => Boolean(value)) ?? "";
 

@@ -2,11 +2,12 @@ import { join } from "node:path";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   extractMessageEntries,
   flattenPiActiveBranch,
+  iterateCodexRollout,
   readClaudeCodeSession,
   readCodexRollout,
   readPiSession,
@@ -63,5 +64,37 @@ describe("session parsers", () => {
     const compressed = await readCodexRollout(compressedPath);
     expect(compressed).toHaveLength(4);
     expect(compressed[0]?.type).toBe("session_meta");
+  });
+  it("reports missing and malformed streamed Codex rollouts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "asb-stream-errors-"));
+    const path = join(dir, "rollout.jsonl");
+    await expect(readCodexRollout(path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await writeFile(path, '{"type":"event_msg"}\r\n\r\ninvalid JSON');
+    await expect(readCodexRollout(path)).rejects.toThrow(SyntaxError);
+    const compressed = path + ".zst";
+    await writeFile(compressed, "invalid compressed data");
+    await expect(readCodexRollout(compressed)).rejects.toThrow();
+  });
+  it("can abandon a compressed rollout without an unhandled stream error", async () => {
+    const path = join(
+      await mkdtemp(join(tmpdir(), "asb-zstd-stop-")),
+      "rollout.zst",
+    );
+    const record = '{"type":"event_msg"}\n';
+    await writeFile(path, zstdCompressSync(record.repeat(100_000)));
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const iterator = iterateCodexRollout(path);
+      expect((await iterator.next()).value).toEqual({ type: "event_msg" });
+      await expect(iterator.return(undefined)).resolves.toMatchObject({
+        done: true,
+      });
+    }
+    await writeFile(
+      path,
+      zstdCompressSync(record + "invalid JSON\n" + record.repeat(100_000)),
+    );
+    await expect(readCodexRollout(path)).rejects.toThrow(SyntaxError);
   });
 });

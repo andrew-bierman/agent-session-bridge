@@ -1,0 +1,546 @@
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import {
+  appendOpenCodeMessages,
+  readOpenCodeRows,
+} from "../src/opencode-store.js";
+import { createOpenCodeSeed } from "../src/runtime.js";
+
+const fixtures = [
+  ["codex", "codex-rollout.jsonl"],
+  ["claude", "claude-session.jsonl"],
+  ["pi", "pi-session.jsonl"],
+] as const;
+
+let root: string;
+afterEach(() => {
+  if (root) rmSync(root, { recursive: true, force: true });
+});
+
+function fixturePath(name: string) {
+  return fileURLToPath(new URL("fixtures/" + name, import.meta.url));
+}
+
+function textTranscript(tool: (typeof fixtures)[number][0], name: string) {
+  const lines = readFileSync(fixturePath(name), "utf8").trim().split("\n");
+  const records = lines
+    .slice(0, tool === "claude" ? 2 : 3)
+    .map((line) => JSON.parse(line));
+  if (tool === "codex")
+    records[0].payload.id = "019cdef0-2584-7a14-8020-123456789abc";
+  const assistant = records.at(-1);
+  const payload = tool === "codex" ? assistant.payload : assistant.message;
+  payload.content = payload.content.slice(0, 1);
+  const path = join(root, name);
+  writeFileSync(
+    path,
+    records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+  return path;
+}
+
+const expectedTurns = [
+  ["user", "Fix auth", Date.parse("2026-04-05T10:00:01.000Z")],
+  ["assistant", "Looking.", Date.parse("2026-04-05T10:00:02.000Z")],
+];
+
+it.each(fixtures)(
+  "preserves %s roles, text, timestamps, and stable native IDs",
+  async (tool, name) => {
+    root = mkdtempSync(join(tmpdir(), "bridge-seed-"));
+    const path = textTranscript(tool, name);
+    const bundle = await createOpenCodeSeed(tool, path, root);
+    expect(bundle.info.location.directory).toBe(root);
+    expect(bundle.info.id).toMatch(/^ses_[a-zA-Z0-9]+$/);
+    expect(
+      bundle.messages.map((message) => [
+        message.type,
+        message.type === "user" ? message.text : message.content[0]?.text,
+        message.time.created,
+      ]),
+    ).toEqual(expectedTurns);
+    expect(new Set(bundle.messages.map((message) => message.id)).size).toBe(2);
+    expect(await createOpenCodeSeed(tool, path, root)).toEqual(bundle);
+  },
+);
+
+it.each(fixtures)(
+  "preserves settled %s tool calls and results as inert text",
+  async (tool, name) => {
+    const bundle = await createOpenCodeSeed(
+      tool,
+      fixturePath(name),
+      "/repo/demo",
+    );
+    const assistant = bundle.messages.filter(
+      (message) => message.type === "assistant",
+    );
+    expect(
+      assistant
+        .flatMap((message) => message.content)
+        .every((block) => block.type === "text"),
+    ).toBe(true);
+    const history = assistant
+      .flatMap((message) => message.content)
+      .map((block) => block.text);
+    expect(history).toContain("Looking.");
+    expect(
+      history.some(
+        (text) =>
+          text.startsWith("Historical tool record") &&
+          text.includes('"type":"tool_call"') &&
+          text.includes("auth.ts"),
+      ),
+    ).toBe(true);
+    expect(
+      history.some(
+        (text) =>
+          text.startsWith("Historical tool record") &&
+          text.includes('"type":"tool_result"') &&
+          text.includes("file contents"),
+      ),
+    ).toBe(true);
+  },
+);
+
+it.each(fixtures)(
+  "rejects a %s seed with an unsettled tool call",
+  async (tool, name) => {
+    root = mkdtempSync(join(tmpdir(), "bridge-seed-unsettled-"));
+    const path = join(root, name);
+    const lines = readFileSync(fixturePath(name), "utf8").trim().split("\n");
+    writeFileSync(path, lines.slice(0, -1).join("\n") + "\n");
+    await expect(createOpenCodeSeed(tool, path, root)).rejects.toThrow(
+      "Unsettled tool calls",
+    );
+    const recovered = await createOpenCodeSeed(tool, path, root, true);
+    expect(recovered.messages).toHaveLength(2);
+    expect(JSON.stringify(recovered)).toContain(
+      "Historical tool record (status unverified)",
+    );
+    expect(await createOpenCodeSeed(tool, path, root, true)).toEqual(recovered);
+    expect(
+      await createOpenCodeSeed(tool, fixturePath(name), root, true),
+    ).toEqual(await createOpenCodeSeed(tool, fixturePath(name), root));
+  },
+);
+
+it("previews Claude tool records repeated in the same transcript once", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-claude-replayed-tools-"));
+  const path = join(root, "claude.jsonl");
+  const source = readFileSync(
+    fixturePath("claude-session.jsonl"),
+    "utf8",
+  ).trim();
+  const [, call, result] = source.split("\n");
+  const repeatedCall = JSON.parse(call!);
+  repeatedCall.uuid = "later-call-record";
+  repeatedCall.message.content = repeatedCall.message.content.filter(
+    (block: { type: string }) => block.type === "tool_use",
+  );
+  writeFileSync(
+    path,
+    [source, JSON.stringify(repeatedCall), result, ""].join("\n"),
+  );
+  const bundle = await createOpenCodeSeed("claude", path, root);
+  expect(bundle.messages).toHaveLength(3);
+  expect(JSON.stringify(bundle)).toContain("file contents");
+  const changedResult = JSON.parse(result!);
+  changedResult.message.content[0].content = "Conflicting replacement";
+  writeFileSync(path, source + "\n" + JSON.stringify(changedResult) + "\n");
+  await expect(createOpenCodeSeed("claude", path, root)).rejects.toThrow(
+    "without a matching call",
+  );
+});
+
+it("preserves the prompt around an image without copying image data into OpenCode", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-image-marker-"));
+  const path = textTranscript("pi", "pi-session.jsonl");
+  const records = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  records[1].message.content = [
+    { type: "text", text: "Review this image" },
+    { type: "image", mimeType: "image/png", data: "private-image-payload" },
+  ];
+  writeFileSync(
+    path,
+    records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+  const bundle = await createOpenCodeSeed("pi", path, root);
+  expect(bundle.messages[0]).toMatchObject({
+    type: "user",
+    text: "Review this image\n[Source image omitted; see the original session]",
+  });
+  expect(JSON.stringify(bundle)).not.toContain("private-image-payload");
+});
+
+it("retains Pi text and marks reasoning and empty records without copying private reasoning", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-seed-reasoning-"));
+  const path = textTranscript("pi", "pi-session.jsonl");
+  const records = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  records[2].message.content.unshift({
+    type: "thinking",
+    thinking: "private reasoning sentinel",
+  });
+  records.push({
+    type: "message",
+    id: "empty333",
+    parentId: records[2].id,
+    timestamp: "2026-04-05T10:00:03.000Z",
+    message: { role: "assistant", content: [] },
+  });
+  writeFileSync(
+    path,
+    records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+  const bundle = await createOpenCodeSeed("pi", path, root);
+  expect(JSON.stringify(bundle)).not.toContain("private reasoning sentinel");
+  expect(
+    bundle.messages
+      .slice(1)
+      .map((message) => message.type === "assistant" && message.content),
+  ).toEqual([
+    [
+      { type: "text", text: "[Source reasoning omitted]" },
+      { type: "text", text: "Looking." },
+    ],
+    [{ type: "text", text: "[Empty source message]" }],
+  ]);
+});
+
+it("preserves standalone Codex tool records with JSON arguments and raw custom input", async () => {
+  root = mkdtempSync(join(tmpdir(), "bridge-standalone-calls-"));
+  const path = join(root, "standalone.jsonl");
+  const base = readFileSync(fixturePath("codex-rollout.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .slice(0, 2);
+  const records = [
+    {
+      type: "function_call",
+      call_id: "one",
+      name: "read_file",
+      arguments: '{"path":"notes.txt"}',
+    },
+    {
+      type: "custom_tool_call",
+      call_id: "two",
+      name: "apply_patch",
+      input: "patch text",
+    },
+    { type: "custom_tool_call_output", call_id: "two", output: "patched" },
+    { type: "function_call_output", call_id: "one", output: "notes" },
+  ];
+  writeFileSync(
+    path,
+    [
+      ...base,
+      ...records.map((payload) =>
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-04-05T10:00:02.000Z",
+          payload,
+        }),
+      ),
+    ].join("\n") + "\n",
+  );
+  const bundle = await createOpenCodeSeed("codex", path, root);
+  const history = bundle.messages.flatMap((message) =>
+    message.type === "assistant"
+      ? message.content.map((block) =>
+          JSON.parse(block.text.slice(block.text.indexOf("{"))),
+        )
+      : [],
+  );
+  expect(history).toEqual([
+    {
+      type: "tool_call",
+      id: "one",
+      name: "read_file",
+      arguments: { path: "notes.txt" },
+    },
+    {
+      type: "tool_call",
+      id: "two",
+      name: "apply_patch",
+      arguments: { input: "patch text" },
+    },
+    { type: "tool_result", toolCallId: "two", output: "patched" },
+    { type: "tool_result", toolCallId: "one", output: "notes" },
+  ]);
+});
+
+it.runIf(process.env.TEST_OPENCODE === "1").each(fixtures)(
+  "seeds and syncs %s under its original ID without duplicating history",
+  (tool, name) => {
+    root = mkdtempSync(join(tmpdir(), "bridge-native-seed-"));
+    const path = textTranscript(tool, name);
+    const database = join(root, "opencode.db");
+    const options = {
+      cwd: root,
+      encoding: "utf8" as const,
+      timeout: 15000,
+      env: {
+        PATH: process.env.PATH,
+        HOME: root,
+        OPENCODE_DB: database,
+        OPENCODE_DISABLE_AUTOUPDATE: "true",
+        XDG_DATA_HOME: join(root, "data"),
+        XDG_CONFIG_HOME: join(root, "config"),
+        XDG_STATE_HOME: join(root, "state"),
+        XDG_CACHE_HOME: join(root, "cache"),
+      },
+    };
+    const bridge = fileURLToPath(
+      new URL("../../../bin/agent-session-bridge", import.meta.url),
+    );
+    const run = (bin: string, ...args: string[]) =>
+      execFileSync(bin, args, { ...options, stdio: "pipe" });
+    new DatabaseSync(database).close();
+    const seed = () => run(bridge, "seed-opencode", tool, path, database);
+    const result = seed();
+    const id = result.match(
+      /OpenCode (ses_[a-zA-Z0-9]+): verified 2 seeded messages/,
+    )?.[1];
+    expect(id).toBeDefined();
+    const exported = () =>
+      JSON.parse(run("opencode", "session", "export", "--standalone", id!));
+    const first = exported();
+    expect(
+      first.messages.map(
+        (message: {
+          type: string;
+          text?: string;
+          content?: { text: string }[];
+          time: { created: number };
+        }) => [
+          message.type,
+          message.text ?? message.content?.[0]?.text,
+          message.time.created,
+        ],
+      ),
+    ).toEqual(expectedTurns);
+    expect(seed()).toBe(result);
+    expect(exported()).toEqual(first);
+    const original = readFileSync(path, "utf8");
+    writeFileSync(path, original.replace("Fix auth", "Edited prompt"));
+    expect(seed).toThrow("OpenCode mirror differs from the source");
+    expect(exported()).toEqual(first);
+    writeFileSync(path, original);
+    const firstRecord = JSON.parse(original.split("\n")[0]!);
+    const nativeId =
+      firstRecord.payload?.id ?? firstRecord.sessionId ?? firstRecord.id;
+    const fallback = join(root, "fallback");
+    mkdirSync(fallback);
+    const rich = join(root, "tool-history.jsonl");
+    writeFileSync(
+      rich,
+      readFileSync(fixturePath(name), "utf8")
+        .replaceAll(
+          "019cdef0-2584-7a14-8020-123456789abc",
+          "019cdef0-2584-7a14-8020-fedcba987654",
+        )
+        .replaceAll("claude-session-1", "rich-claude-session")
+        .replaceAll("pi-session-1", "rich-pi-session"),
+    );
+    const batch = () =>
+      run(
+        bridge,
+        "seed-opencode",
+        tool,
+        join(root, "missing.jsonl"),
+        rich,
+        "--database",
+        database,
+        "--target-cwd",
+        fallback,
+      );
+    const duplicate = join(root, "duplicate.jsonl");
+    writeFileSync(
+      duplicate,
+      readFileSync(rich, "utf8").replace("Fix auth", "Divergent branch"),
+    );
+    const conflicting = () =>
+      run(
+        bridge,
+        "seed-opencode",
+        tool,
+        rich,
+        duplicate,
+        "--database",
+        database,
+        "--target-cwd",
+        fallback,
+      );
+    try {
+      conflicting();
+      throw new Error(
+        "Expected both conflicting files to be rejected before writes",
+      );
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 1,
+        stdout: expect.stringContaining("0 imported or verified, 2 rejected"),
+      });
+    }
+    const checkConflicts = () =>
+      run(bridge, "seed-opencode", tool, rich, duplicate, "--dry-run");
+    try {
+      checkConflicts();
+      throw new Error("Expected a nonzero status for both duplicate claims");
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 1,
+        stdout: expect.stringContaining("0 validated, 2 rejected"),
+      });
+    }
+    let importedRich: string;
+    try {
+      batch();
+      throw new Error("Expected a nonzero status for the missing transcript");
+    } catch (error) {
+      expect(error).toMatchObject({ status: 1 });
+      importedRich = (error as { stdout: string }).stdout;
+    }
+    expect(importedRich).toContain("1 imported or verified, 1 rejected");
+    const richId = importedRich.match(
+      /OpenCode (ses_[a-zA-Z0-9]+): verified 3 seeded messages/,
+    )?.[1];
+    expect(richId).toBeDefined();
+    const richExport = JSON.parse(
+      run("opencode", "session", "export", "--standalone", richId!),
+    );
+    expect(richExport.info.location.directory).toBe(realpathSync(fallback));
+    expect(
+      richExport.messages.map((message: { type: string }) => message.type),
+    ).toEqual(["user", "assistant", "assistant"]);
+    expect(richExport.messages.at(-1)?.content).toEqual([
+      { type: "text", text: expect.stringContaining("file contents") },
+    ]);
+    try {
+      batch();
+      throw new Error(
+        "Expected the batch retry to report the missing transcript again",
+      );
+    } catch (error) {
+      expect(error).toMatchObject({ status: 1, stdout: importedRich });
+    }
+    expect(
+      JSON.parse(run("opencode", "session", "export", "--standalone", richId!)),
+    ).toEqual(richExport);
+    const sync = () => run(bridge, "sync-opencode", id!, database);
+    const version = run("opencode", "--version")
+      .trim()
+      .replace(/^opencode v/, "");
+    const { rows, cursor } = readOpenCodeRows(database, version, id!);
+    const created = Date.parse("2026-04-05T10:00:03.000Z");
+    appendOpenCodeMessages(database, version, id!, rows, [
+      {
+        id: "msg_0000000000000000000000000000009",
+        type: "user",
+        seq: cursor + 1,
+        time_created: created,
+        time_updated: created,
+        data: JSON.stringify({
+          time: { created },
+          text: "New OpenCode prompt",
+        }),
+      },
+    ]);
+    expect(sync()).toContain(`${nativeId}:`);
+    expect(sync()).toContain("0 records appended");
+    const synced = readFileSync(path, "utf8");
+    expect(synced.match(/New OpenCode prompt/g)).toHaveLength(
+      tool === "codex" ? 2 : 1,
+    );
+    expect(synced.match(/Fix auth/g)).toHaveLength(1);
+    const timestamp = "2026-04-05T10:00:04.000Z";
+    const reply = "New original-harness answer";
+    const nativeRecord =
+      tool === "codex"
+        ? {
+            type: "response_item",
+            timestamp,
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: reply }],
+            },
+          }
+        : tool === "claude"
+          ? {
+              type: "assistant",
+              timestamp,
+              uuid: "native-reply",
+              sessionId: nativeId,
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: reply }],
+              },
+            }
+          : {
+              type: "message",
+              timestamp,
+              id: "12345678",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: reply }],
+              },
+            };
+    writeFileSync(path, synced + JSON.stringify(nativeRecord) + "\n");
+    expect(sync()).toContain("1 messages appended");
+    expect(sync()).toContain("0 messages appended");
+    expect(exported().messages.at(-1)?.content).toEqual([
+      { type: "text", text: reply },
+    ]);
+    expect(
+      readFileSync(path, "utf8").match(/New original-harness answer/g),
+    ).toHaveLength(1);
+    const beforeTools = readFileSync(path, "utf8");
+    const [call, resultRecord] = readFileSync(rich, "utf8")
+      .trim()
+      .replaceAll("rich-claude-session", nativeId)
+      .replaceAll("claude-assistant-1", "claude-assistant-new")
+      .replaceAll("bbbb2222", "bbbb3333")
+      .split("\n")
+      .slice(-2);
+    const beforeUnsettled = exported();
+    writeFileSync(path, beforeTools + call + "\n");
+    expect(sync).toThrow("Unsettled tool calls");
+    expect(exported()).toEqual(beforeUnsettled);
+    writeFileSync(path, beforeTools + call + "\n" + resultRecord + "\n");
+    expect(sync()).toContain("2 messages appended");
+    expect(sync()).toContain("0 messages appended");
+    expect(
+      exported()
+        .messages.slice(-2)
+        .map((message: { content: { type: string }[] }) =>
+          message.content.map((block) => block.type),
+        ),
+    ).toEqual([["text", "text"], ["text"]]);
+    expect(exported().messages.at(-1)?.content).toEqual([
+      { type: "text", text: expect.stringContaining("file contents") },
+    ]);
+    expect(readFileSync(path, "utf8")).toBe(
+      beforeTools + call + "\n" + resultRecord + "\n",
+    );
+  },
+  60000,
+);

@@ -1,9 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
-import {
-  generateCodexThreadId,
-  isCodexThreadId,
-} from "../src/index.js";
+import { generateCodexThreadId, isCodexThreadId } from "../src/index.js";
 import {
   buildExperimentalRollout,
   discoverRolloutPath,
@@ -13,11 +10,7 @@ describe("codex validation gate", () => {
   it("creates a rollout path that matches the expected resume location pattern", () => {
     const date = new Date(2026, 3, 5, 10, 0, 0);
     const threadId = generateCodexThreadId(date);
-    const path = discoverRolloutPath(
-      threadId,
-      date,
-      "/repo/demo/.codex",
-    );
+    const path = discoverRolloutPath(threadId, date, "/repo/demo/.codex");
     expect(path).toContain(threadId);
     expect(path).toContain("rollout-2026-04-05T10-00-00-");
   });

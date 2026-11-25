@@ -1,10 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   convertClaudeLineToNormalized,
   convertCodexItemToNormalized,
   convertNormalizedToClaudeLine,
-  convertNormalizedToCodexItems,
   convertNormalizedToPiEntry,
   convertPiEntryToNormalized,
   type ClaudeCodeLine,
@@ -37,6 +36,82 @@ describe("converters", () => {
     expect(convertPiEntryToNormalized(entry)).toMatchObject({
       id: "pi-1",
       role: "assistant",
+    });
+  });
+
+  it("drops Pi system records instead of turning them into empty user messages", () => {
+    const placeholder = {
+      type: "message",
+      id: "sys-1",
+      timestamp: "2026-11-24T05:43:07.000Z",
+      message: { role: "system", content: "" },
+    };
+    expect(convertPiEntryToNormalized(placeholder)).toBeNull();
+    expect(
+      convertPiEntryToNormalized({
+        ...placeholder,
+        message: { role: "system", content: "You are a helpful agent." },
+      }),
+    ).toBeNull();
+  });
+
+  it("still converts Pi user, assistant, and tool results", () => {
+    const at = "2026-11-24T05:43:08.000Z";
+    const user = convertPiEntryToNormalized({
+      type: "message",
+      id: "u",
+      timestamp: at,
+      message: { role: "user", content: [{ type: "text", text: "hi" }] },
+    });
+    const result = convertPiEntryToNormalized({
+      type: "message",
+      id: "t",
+      timestamp: at,
+      message: { role: "toolResult", toolCallId: "c1", content: [] },
+    });
+    expect(user).toMatchObject({ role: "user" });
+    expect(result).toMatchObject({ role: "tool" });
+  });
+
+  it("exports a text-only Pi tool result as plain text and round-trips it", () => {
+    const at = "2026-04-05T10:00:00.000Z";
+    const normalized = convertPiEntryToNormalized({
+      type: "message",
+      id: "t",
+      timestamp: at,
+      message: {
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "bash",
+        content: [
+          { type: "text", text: "hello\n" },
+          { type: "text", text: "world\n" },
+        ],
+      },
+    });
+    expect(normalized?.content[0]).toMatchObject({
+      type: "tool_result",
+      output: "hello\nworld\n",
+    });
+    expect(convertNormalizedToPiEntry(normalized!, null).message).toMatchObject(
+      {
+        role: "toolResult",
+        content: [{ type: "text", text: "hello\nworld\n" }],
+      },
+    );
+  });
+
+  it("keeps a non-text Pi tool result structured instead of dropping it", () => {
+    const image = { type: "image", data: "AAAA", mimeType: "image/png" };
+    const normalized = convertPiEntryToNormalized({
+      type: "message",
+      id: "t",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      message: { role: "toolResult", toolCallId: "c1", content: [image] },
+    });
+    expect(normalized?.content[0]).toMatchObject({
+      type: "tool_result",
+      output: JSON.stringify([image]),
     });
   });
 
@@ -111,6 +186,26 @@ describe("converters", () => {
           {
             type: "input_text",
             text: "# AGENTS.md instructions for /repo/demo",
+          },
+        ],
+      },
+    };
+
+    expect(convertCodexItemToNormalized(item)).toBeNull();
+  });
+
+  it("skips the AGENTS.md bootstrap block that has no directory suffix", () => {
+    const item: CodexRolloutItem = {
+      type: "response_item",
+      payload: {
+        id: "codex-bootstrap-3",
+        type: "message",
+        role: "user",
+        timestamp: "2026-04-05T10:00:00.000Z",
+        content: [
+          {
+            type: "input_text",
+            text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nUse small commits.\n</INSTRUCTIONS>",
           },
         ],
       },
@@ -254,9 +349,6 @@ describe("converters", () => {
     ).toMatchObject({
       role: "assistant",
     });
-    expect(convertNormalizedToCodexItems(message)[0]?.type).toBe(
-      "response_item",
-    );
   });
 
   it("drops empty thinking blocks when converting to Claude lines", () => {

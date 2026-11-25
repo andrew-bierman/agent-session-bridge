@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   getClaudeCodeProjectDir,
@@ -80,6 +80,40 @@ async function writeAdjustedFixture(
 }
 
 describe("CLI", () => {
+  it("previews all OpenCode seed candidates and reports unsupported sessions without writing", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const eligible = join(fixturesDir, "pi-session.jsonl");
+    const unsupported = join(projectDir, "unsettled.jsonl");
+    const records = (await readFile(eligible, "utf8")).trim().split("\n");
+    const invalid =
+      records
+        .slice(0, -1)
+        .join("\n")
+        .replace("pi-session-1", "unsettled-session") + "\n";
+    await writeFile(unsupported, invalid);
+    const manifest = join(projectDir, "source paths.json");
+    await writeFile(manifest, JSON.stringify([eligible, unsupported]));
+    const lines: string[] = [];
+    const exitCode = await runCli(
+      ["seed-opencode", "pi", "--from-list", manifest, "--dry-run"],
+      {
+        cwd: projectDir,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {
+          throw new Error("preview attempted to save");
+        },
+        stdout: (line) => lines.push(line),
+      },
+    );
+    expect(exitCode).toBe(1);
+    expect(lines[0]).toMatch(/ses_[a-z0-9]+, 3 messages eligible for import/);
+    expect(lines[1]).toContain("Unsettled tool calls");
+    expect(lines[2]).toBe("dry-run: 1 validated, 1 rejected; no writes");
+    expect(await exists(join(homeDir, ".agent-session-bridge"))).toBe(false);
+    expect(await readFile(unsupported, "utf8")).toBe(invalid);
+  });
+
   it("lists conversations", async () => {
     const lines: string[] = [];
 
@@ -476,9 +510,9 @@ CREATE TABLE threads (
       .toString()
       .trim();
     expect(indexedRow).toContain(codexThreadId);
-    expect(lines.some((line) => line.includes("reindexed 1 Codex mirrors"))).toBe(
-      true,
-    );
+    expect(
+      lines.some((line) => line.includes("reindexed 1 Codex mirrors")),
+    ).toBe(true);
   });
 
   it("audits the registry as JSON", async () => {
@@ -798,6 +832,84 @@ CREATE TABLE threads (
     expect((await readClaudeCodeSession(importedPath)).length).toBe(3);
   });
 
+  it("previews OpenCode exports without writes and retries a mixed batch without duplicates", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const valid = join(projectDir, "valid.json");
+    const invalid = join(projectDir, "invalid.json");
+    const lines: string[] = [];
+    const bundle = {
+      info: {
+        id: "ses_batch",
+        location: { directory: projectDir },
+        time: { created: 1 },
+      },
+      messages: [
+        {
+          type: "user",
+          id: "msg_batch",
+          time: { created: 1 },
+          text: "Batch fixture",
+        },
+        {
+          type: "system",
+          id: "msg_system",
+          time: { created: 2 },
+          text: "SYSTEM_SENTINEL",
+        },
+        {
+          type: "synthetic",
+          id: "msg_synthetic",
+          time: { created: 3 },
+          text: "Synthetic history sentinel",
+        },
+        {
+          type: "compaction",
+          id: "msg_compaction",
+          time: { created: 4 },
+          status: "completed",
+          summary: "Compaction history sentinel",
+        },
+      ],
+    };
+    await writeFile(valid, JSON.stringify(bundle));
+    await writeFile(
+      invalid,
+      JSON.stringify({ ...bundle, messages: [{ type: "shell" }] }),
+    );
+    const run = (...flags: string[]) =>
+      runCli(["import-opencode", valid, invalid, "--tool", "codex", ...flags], {
+        cwd: projectDir,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {},
+        stdout: (line) => lines.push(line),
+      });
+    expect(await run("--dry-run")).toBe(1);
+    expect(lines.join("\n")).toContain("1 validated, 1 rejected");
+    expect(lines.join("\n")).toContain("1 system record omitted");
+    await expect(access(registryPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(access(join(homeDir, ".codex"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await run()).toBe(1);
+    expect(
+      (await loadRegistry(registryPath, { readFile })).conversations,
+    ).toHaveLength(1);
+    const registry = await loadRegistry(registryPath, { readFile });
+    const rollout = await readFile(
+      registry.conversations[0]!.mirrors.codex!.sessionPath,
+      "utf8",
+    );
+    expect(rollout).toContain("Synthetic history sentinel");
+    expect(rollout).toContain("Compaction history sentinel");
+    expect(rollout).not.toContain("SYSTEM_SENTINEL");
+    lines.length = 0;
+    expect(await run()).toBe(1);
+    expect(lines.join("\n")).toContain("0 records appended");
+  });
+
   it("supports bulk import mode", async () => {
     const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
     const piSessionPath = join(
@@ -815,6 +927,27 @@ CREATE TABLE threads (
       piSessionPath,
       projectDir,
     );
+
+    const preview = await runCli(
+      ["import", "--all", "--dry-run", "--tool", "claude", "--cwd", projectDir],
+      {
+        cwd: repoRoot,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {
+          throw new Error("dry run attempted to save");
+        },
+        stdout: (line) => lines.push(line),
+      },
+    );
+    expect(preview).toBe(0);
+    await expect(readFile(registryPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(
+      access(join(homeDir, ".claude", "projects")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(lines.pop()).toContain("1 candidate route");
 
     const exitCode = await runCli(
       ["import", "--all", "--tool", "claude", "--cwd", projectDir],
@@ -837,6 +970,35 @@ CREATE TABLE threads (
 
     expect(exitCode).toBe(0);
     expect(lines[0]).toContain("imported");
+    const saved = await loadRegistry(registryPath, { readFile });
+    const mirror = saved.conversations[0]!.mirrors.claude!;
+    const original = await readFile(piSessionPath, "utf8");
+    const imported = await readFile(mirror.sessionPath, "utf8");
+    await writeFile(
+      mirror.sessionPath,
+      imported +
+        JSON.stringify({
+          type: "user",
+          sessionId: mirror.nativeId,
+          cwd: projectDir,
+          timestamp: new Date().toISOString(),
+          uuid: "native-claude-turn",
+          message: { role: "user", content: "Only in the Claude mirror" },
+        }) +
+        "\n",
+    );
+    lines.length = 0;
+    expect(
+      await runCli(["import", "--all", "--tool", "pi", "--cwd", projectDir], {
+        cwd: repoRoot,
+        homeDir,
+        load: () => loadRegistry(registryPath, { readFile }),
+        save: async () => {},
+        stdout: (line) => lines.push(line),
+      }),
+    ).toBe(0);
+    expect(lines[0]).toContain("imported 0 entries");
+    expect(await readFile(piSessionPath, "utf8")).toBe(original);
   });
 
   it("skips malformed source session files during bulk import", async () => {

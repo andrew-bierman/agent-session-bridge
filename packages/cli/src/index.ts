@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 
+import { constants as bufferConstants } from "node:buffer";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, realpathSync } from "node:fs";
+import { createWriteStream, existsSync, realpathSync } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 import {
   backfillCodexThreadIndex,
   createDefaultConfig,
+  createOpenCodeSeed,
+  seedLinkedSessionInOpenCode,
+  readSeedSourceId,
+  syncOpenCodeSession,
   findConversationByBridgeSessionId,
+  findConversationByNativeSession,
   findConversationByProjectKey,
   getClaudeCodeProjectDir,
   getPiSessionDir,
@@ -17,11 +25,14 @@ import {
   isProjectEnabled,
   listForeignSessionCandidates,
   loadBridgeConfig,
+  loadSourceSessionSnapshot,
+  loadOpenCodeDatabaseSnapshot,
   loadRegistry,
   saveRegistry,
   serializeBridgeConfig,
   setRepairState,
   syncSourceSessionToTargets,
+  returnCodexTurnsToOpenCode,
   upsertConversation,
   hasCodexThreadIndexEntry,
   type BridgeConfig,
@@ -61,7 +72,13 @@ function withoutFlags(args: string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index]!;
     if (value.startsWith("--")) {
-      if (value === "--cwd" || value === "--tool") {
+      if (
+        value === "--cwd" ||
+        value === "--tool" ||
+        value === "--target-cwd" ||
+        value === "--database" ||
+        value === "--from-list"
+      ) {
         index += 1;
       }
       continue;
@@ -70,6 +87,25 @@ function withoutFlags(args: string[]): string[] {
   }
 
   return result;
+}
+
+async function exportOpenCodeSession(
+  id: string,
+  path: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const output = await fs.open(path, "wx", 0o600);
+  try {
+    execFileSync("opencode", ["session", "export", "--standalone", id], {
+      cwd,
+      env,
+      timeout: 30000,
+      stdio: ["ignore", output.fd, "pipe"],
+    });
+  } finally {
+    await output.close();
+  }
 }
 
 function resolveHomeDir(deps: CliDeps): string {
@@ -345,12 +381,12 @@ async function installRuntimeBundle(
 
     if (!(await pathExists(sourcePackageJson, deps))) {
       throw new Error(
-        `Missing packaged asset: ${sourcePackageJson}. Run pnpm build before setup.`,
+        `Missing packaged asset: ${sourcePackageJson}. Run bun run build before setup.`,
       );
     }
     if (!(await pathExists(sourceDistDir, deps))) {
       throw new Error(
-        `Missing packaged asset: ${sourceDistDir}. Run pnpm build before setup.`,
+        `Missing packaged asset: ${sourceDistDir}. Run bun run build before setup.`,
       );
     }
 
@@ -840,7 +876,7 @@ const metaPrefixes = [
   "<apps_instructions>",
   "<skills_instructions>",
   "<plugins_instructions>",
-  "# AGENTS.md instructions for ",
+  "# AGENTS.md instructions",
   "<environment_context>",
   "<turn_aborted>",
   "When you write or edit a git commit message, ensure the message ends with this trailer exactly once:",
@@ -1197,8 +1233,8 @@ async function inspectCodexMirrorIndexForProject(
   missingRows: number;
   invalidThreadIds: number;
 }> {
-  const conversations = registry.conversations.filter(
-    (conversation) => conversationMatchesProject(conversation, cwd),
+  const conversations = registry.conversations.filter((conversation) =>
+    conversationMatchesProject(conversation, cwd),
   );
 
   let mirrorsScanned = 0;
@@ -1212,9 +1248,11 @@ async function inspectCodexMirrorIndexForProject(
     }
 
     mirrorsScanned += 1;
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      codexMirror.nativeId,
-    )) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        codexMirror.nativeId,
+      )
+    ) {
       invalidThreadIds += 1;
       continue;
     }
@@ -1246,8 +1284,8 @@ async function repairCodexMirrorIndexForProject(
   invalidThreadIds: number;
   missingRollouts: number;
 }> {
-  const conversations = registry.conversations.filter(
-    (conversation) => conversationMatchesProject(conversation, cwd),
+  const conversations = registry.conversations.filter((conversation) =>
+    conversationMatchesProject(conversation, cwd),
   );
 
   let mirrorsScanned = 0;
@@ -1373,8 +1411,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     const codex = await inspectCodexInstall(homeDir, runtimeRoot, deps);
     const claudeState = await readHookRunState(homeDir, "claude-code", deps);
     const codexState = await readHookRunState(homeDir, "codex", deps);
-    const conversations = registry.conversations.filter(
-      (conversation) => conversationMatchesProject(conversation, cwd),
+    const conversations = registry.conversations.filter((conversation) =>
+      conversationMatchesProject(conversation, cwd),
     );
     const codexIndex = await inspectCodexMirrorIndexForProject(
       cwd,
@@ -1502,31 +1540,488 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 0;
   }
 
+  if (command === "seed-opencode") {
+    const [tool, ...positionalPaths] = rest;
+    const allowIncompleteTools = hasFlag(
+      restWithFlags,
+      "--allow-incomplete-tools",
+    );
+    const manifest = readOption(restWithFlags, "--from-list");
+    const fromList = hasFlag(restWithFlags, "--from-list");
+    const batch = hasFlag(restWithFlags, "--database");
+    const fallback = readOption(restWithFlags, "--target-cwd");
+    const fallbackFlag = hasFlag(restWithFlags, "--target-cwd");
+    const batchDatabase = readOption(restWithFlags, "--database");
+    if (
+      (tool !== "codex" && tool !== "claude" && tool !== "pi") ||
+      (batch && (dryRun || !batchDatabase || batchDatabase.startsWith("--"))) ||
+      (fallbackFlag && (!batch || !fallback || fallback.startsWith("--"))) ||
+      (fromList
+        ? !manifest ||
+          manifest.startsWith("--") ||
+          positionalPaths.length > 0 ||
+          (!batch && !dryRun)
+        : positionalPaths.length === 0) ||
+      (!dryRun && !batch && positionalPaths.length !== 2) ||
+      restWithFlags.length !==
+        rest.length +
+          (dryRun ? 1 : batch ? 2 : 0) +
+          (fallbackFlag ? 2 : 0) +
+          (allowIncompleteTools ? 1 : 0) +
+          (fromList ? 2 : 0)
+    ) {
+      throw new Error(
+        "Usage: seed-opencode <codex|claude|pi> <transcript> <database>, seed-opencode <codex|claude|pi> <transcript>... --database <database> [--target-cwd <fallback directory>], or seed-opencode <codex|claude|pi> <transcript>... --dry-run. Batch and preview may use --from-list <JSON file> in place of transcript paths.",
+      );
+    }
+    let paths = positionalPaths;
+    if (manifest) {
+      const entries: unknown = JSON.parse(
+        await fs.readFile(resolve(cwd, manifest), "utf8"),
+      );
+      if (
+        !Array.isArray(entries) ||
+        !entries.length ||
+        entries.some((entry) => typeof entry !== "string" || !entry.length)
+      )
+        throw new Error("Expected a nonempty JSON array of transcript paths");
+      paths = entries;
+    }
+    const project = await fs.realpath(cwd);
+    const sourceIds = new Map<string, string>();
+    const conflictingIds = new Set<string>();
+    const firstPaths = new Map<string, string>();
+    for (const path of dryRun || batch ? paths : []) {
+      try {
+        const canonical = await fs.realpath(resolve(cwd, path));
+        const id = await readSeedSourceId(tool, canonical);
+        if (!id) continue;
+        const first = firstPaths.get(id);
+        if (first && first !== canonical) conflictingIds.add(id);
+        firstPaths.set(id, canonical);
+        sourceIds.set(path, id);
+      } catch {
+        // The seed pass reports unreadable and malformed transcripts per path.
+      }
+    }
+    if (dryRun) {
+      let rejected = 0;
+      for (const path of paths) {
+        try {
+          const id = sourceIds.get(path);
+          if (id && conflictingIds.has(id))
+            throw new Error(
+              "Multiple source files claim the same native session ID",
+            );
+          const bundle = await createOpenCodeSeed(
+            tool,
+            resolve(cwd, path),
+            project,
+            allowIncompleteTools,
+          );
+          deps.stdout(
+            `${path}: ${bundle.info.id}, ${bundle.messages.length} messages eligible for import`,
+          );
+        } catch (error) {
+          rejected += 1;
+          deps.stdout(`${path}: rejected (${(error as Error).message})`);
+        }
+      }
+      deps.stdout(
+        `dry-run: ${paths.length - rejected} validated, ${rejected} rejected; no writes`,
+      );
+      return rejected ? 1 : 0;
+    }
+    const databasePath = await fs.realpath(
+      resolve(cwd, batchDatabase ?? paths[1]!),
+    );
+    const fallbackCwd = fallback
+      ? await fs.realpath(resolve(cwd, fallback))
+      : undefined;
+    const env = { ...process.env, OPENCODE_DB: databasePath };
+    const opencode = (args: string[], directory = cwd) =>
+      execFileSync("opencode", args, {
+        cwd: directory,
+        env,
+        encoding: "utf8",
+        timeout: 30000,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+    const version = opencode(["--version"])
+      .trim()
+      .replace(/^opencode v/, "");
+    if (version !== "2.3.0" && version !== "2.3.2")
+      throw new Error("Unsupported OpenCode version");
+
+    const importVerified = async (
+      bundle: Awaited<ReturnType<typeof createOpenCodeSeed>>,
+      alreadyLinked: boolean,
+    ) => {
+      const verifyStoredRows = async () => {
+        const { verifyOpenCodeSeedRows } =
+          await import("../../core/src/opencode-store.js");
+        if (
+          !verifyOpenCodeSeedRows(
+            databasePath,
+            version,
+            bundle.info.id,
+            bundle.info.location.directory,
+            bundle.messages,
+          )
+        ) {
+          throw new Error(
+            "OpenCode mirror differs from the source; no existing history was overwritten",
+          );
+        }
+      };
+      if (alreadyLinked) {
+        await verifyStoredRows();
+        return;
+      }
+      const directory = await fs.mkdtemp(
+        join(tmpdir(), "bridge-opencode-seed-"),
+      );
+      try {
+        const path = join(directory, "session.json");
+        await pipeline(
+          (function* () {
+            yield `{"info":${JSON.stringify(bundle.info)},"messages":[`;
+            for (const [index, message] of bundle.messages.entries())
+              yield (index ? "," : "") + JSON.stringify(message);
+            yield "]}";
+          })(),
+          createWriteStream(path, { mode: 0o600, flags: "wx" }),
+        );
+        opencode(
+          ["session", "import", "--standalone", path],
+          bundle.info.location.directory,
+        );
+        const exportPath = join(directory, "verified.json");
+        await exportOpenCodeSession(
+          bundle.info.id,
+          exportPath,
+          bundle.info.location.directory,
+          env,
+        );
+        if (
+          (await fs.stat(exportPath)).size >= bufferConstants.MAX_STRING_LENGTH
+        ) {
+          await verifyStoredRows();
+          return;
+        }
+        const actual = JSON.parse(await fs.readFile(exportPath, "utf8"));
+        if (
+          actual.info?.id !== bundle.info.id ||
+          actual.info?.location?.directory !== bundle.info.location.directory ||
+          !Array.isArray(actual.messages) ||
+          actual.messages.length < bundle.messages.length ||
+          bundle.messages.some((message, i) => {
+            const existing = actual.messages[i];
+            return (
+              existing?.id !== message.id ||
+              existing.type !== message.type ||
+              existing.time?.created !== message.time.created ||
+              (message.type === "user"
+                ? existing.text !== message.text
+                : JSON.stringify(existing.content) !==
+                  JSON.stringify(message.content))
+            );
+          })
+        )
+          throw new Error(
+            "OpenCode mirror differs from the source; no existing history was overwritten",
+          );
+      } finally {
+        await fs.rm(directory, { force: true, recursive: true });
+      }
+    };
+    const seed = async (path: string, expectedSourceId?: string) => {
+      const bundle = await seedLinkedSessionInOpenCode({
+        tool,
+        expectedSourceId,
+        sourcePath: await fs.realpath(resolve(cwd, path)),
+        cwd: batch ? undefined : project,
+        fallbackCwd,
+        allowIncompleteTools,
+        databasePath,
+        registryPath: resolveRegistryPath(homeDir),
+        importVerified,
+      });
+      return `OpenCode ${bundle.info.id}: verified ${bundle.messages.length} seeded messages`;
+    };
+    if (!batch) {
+      deps.stdout(await seed(paths[0]!));
+      return 0;
+    }
+    let rejected = 0;
+    for (const path of paths) {
+      try {
+        const id = sourceIds.get(path);
+        if (id && conflictingIds.has(id))
+          throw new Error(
+            "Multiple source files claim the same native session ID",
+          );
+        deps.stdout(`${path}: ${await seed(path, id)}`);
+      } catch (error) {
+        rejected += 1;
+        deps.stdout(`${path}: rejected (${(error as Error).message})`);
+      }
+    }
+    deps.stdout(
+      `${paths.length - rejected} imported or verified, ${rejected} rejected`,
+    );
+    return rejected ? 1 : 0;
+  }
+
+  if (command === "sync-opencode") {
+    const outboundOnly = hasFlag(restWithFlags, "--outbound-only");
+    const all = hasFlag(restWithFlags, "--all");
+    const [id, second] = rest;
+    const database = all ? id : second;
+    if (
+      !database ||
+      (!all && (!id || !/^ses_[a-zA-Z0-9]+$/.test(id))) ||
+      rest.length !== (all ? 1 : 2) ||
+      restWithFlags.length !== (outboundOnly ? 3 : 2)
+    ) {
+      throw new Error(
+        "Usage: sync-opencode <OpenCode session ID> <database>, or sync-opencode --all <database> [--outbound-only]",
+      );
+    }
+    const databasePath = await fs.realpath(resolve(cwd, database));
+    const version = execFileSync("opencode", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+    })
+      .trim()
+      .replace(/^opencode v/, "");
+    if (version !== "2.3.0" && version !== "2.3.2")
+      throw new Error("Unsupported OpenCode version");
+    const sync = async (id: string) => {
+      const { tool, write, returned } = await syncOpenCodeSession({
+        registryPath: resolveRegistryPath(homeDir),
+        homeDir,
+        databasePath,
+        version,
+        sessionId: id,
+        outboundOnly,
+      });
+      const label = { codex: "Codex", claude: "Claude Code", pi: "Pi" }[tool];
+      deps.stdout(
+        `${label} ${write.targetSessionId}: ${write.appendedCount} records appended; OpenCode ${id}: ${returned} messages appended`,
+      );
+    };
+    if (!all) {
+      await sync(id!);
+      return 0;
+    }
+    let processed = 0;
+    let rejected = 0;
+    for (const conversation of registry.conversations) {
+      const mirror = conversation.mirrors.opencode;
+      if (
+        conversation.status !== "active" ||
+        !mirror?.exportPrefix ||
+        !conversation.mirrors[mirror.seedTool ?? "codex"] ||
+        (outboundOnly && !mirror.openCodeDatabasePath) ||
+        (mirror.openCodeDatabasePath &&
+          mirror.openCodeDatabasePath !== databasePath)
+      )
+        continue;
+      try {
+        await sync(mirror.nativeId);
+        processed += 1;
+      } catch (error) {
+        rejected += 1;
+        deps.stdout(
+          `OpenCode ${mirror.nativeId}: rejected (${(error as Error).message})`,
+        );
+      }
+    }
+    deps.stdout(`${processed} linked sessions processed, ${rejected} rejected`);
+    return rejected ? 1 : 0;
+  }
+
+  if (command === "return-to-opencode") {
+    const [id, database] = rest;
+    if (!id || !database || rest.length !== 2 || restWithFlags.length !== 2) {
+      throw new Error(
+        "Usage: return-to-opencode <linked Codex session ID> <OpenCode database path>",
+      );
+    }
+    const version = execFileSync("opencode", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+    })
+      .trim()
+      .replace(/^opencode v/, "");
+    const count = await returnCodexTurnsToOpenCode({
+      registryPath: resolveRegistryPath(homeDir),
+      codexSessionId: id,
+      databasePath: resolve(cwd, database),
+      version,
+    });
+    deps.stdout(`OpenCode: ${count} messages appended`);
+    return 0;
+  }
+
+  if (command === "import-opencode") {
+    const targetCwd = readOption(restWithFlags, "--target-cwd");
+    const tool = readOption(restWithFlags, "--tool");
+    const fromDatabase = hasFlag(restWithFlags, "--database");
+    const database = readOption(restWithFlags, "--database");
+    if (
+      (fromDatabase
+        ? !database ||
+          database.startsWith("--") ||
+          rest.some((id) => !/^ses_[a-zA-Z0-9]+$/.test(id))
+        : rest.length === 0) ||
+      (hasFlag(restWithFlags, "--target-cwd") &&
+        (!targetCwd || targetCwd.startsWith("--"))) ||
+      (hasFlag(restWithFlags, "--tool") &&
+        tool !== "pi" &&
+        tool !== "claude" &&
+        tool !== "codex")
+    ) {
+      throw new Error(
+        "Usage: import-opencode <OpenCode v2 export.json>... or --database <OpenCode database> [session ID ...] [--dry-run] [--tool pi|claude|codex] [--target-cwd DIRECTORY]",
+      );
+    }
+    let successful = 0;
+    let rejected = 0;
+    const destination = targetCwd ? resolve(cwd, targetCwd) : undefined;
+    const databasePath = database
+      ? await fs.realpath(resolve(cwd, database))
+      : undefined;
+    let version: string | undefined;
+    let sources = rest;
+    if (databasePath) {
+      version = execFileSync("opencode", ["--version"], {
+        encoding: "utf8",
+        timeout: 5000,
+      })
+        .trim()
+        .replace(/^opencode v/, "");
+      if (rest.length === 0) {
+        const { listOpenCodeSessionIds } =
+          await import("../../core/src/opencode-store.js");
+        sources = listOpenCodeSessionIds(databasePath, version);
+      }
+    }
+    for (const [index, source] of sources.entries()) {
+      const sourcePath = databasePath ?? resolve(cwd, source);
+      const label = databasePath ? `OpenCode ${source}` : `export ${index + 1}`;
+      try {
+        const reportOmissions = (count: number | undefined) => {
+          if (count)
+            deps.stdout(
+              `${label}: ${count} system record${count === 1 ? "" : "s"} omitted`,
+            );
+        };
+        if (dryRun) {
+          const snapshot = version
+            ? await loadOpenCodeDatabaseSnapshot(sourcePath, version, source)
+            : await loadSourceSessionSnapshot("opencode", sourcePath);
+          if (version && !snapshot.chunks.length)
+            throw new Error("OpenCode session has no supported messages");
+          const linked = findConversationByNativeSession(
+            registry,
+            "opencode",
+            snapshot.sourceSessionId,
+          );
+          if (
+            !(
+              await fs.stat(destination ?? linked?.canonicalCwd ?? snapshot.cwd)
+            ).isDirectory()
+          ) {
+            throw new Error("Project path is not a directory");
+          }
+          reportOmissions(snapshot.omittedSystemRecords);
+          deps.stdout(
+            `${label}: ${snapshot.chunks.length} supported messages; no writes`,
+          );
+        } else {
+          const result = await syncSourceSessionToTargets({
+            sourceTool: "opencode",
+            sourcePath,
+            sourceSessionId: version ? source : undefined,
+            openCodeDatabaseVersion: version,
+            targetTools,
+            targetCwd: destination,
+            registryPath: resolveRegistryPath(homeDir),
+            homeDir,
+          });
+          reportOmissions(result.snapshot.omittedSystemRecords);
+          for (const write of result.writes) {
+            deps.stdout(
+              `${write.targetTool}: ${write.targetSessionId} (${write.appendedCount} records appended)`,
+            );
+          }
+        }
+        successful++;
+      } catch (error) {
+        rejected++;
+        const reason =
+          error instanceof SyntaxError
+            ? "Malformed JSON"
+            : error instanceof Error
+              ? error.message
+              : "Unknown import error";
+        deps.stdout(`${label} rejected: ${reason}`);
+      }
+    }
+    deps.stdout(
+      `${successful} ${dryRun ? "validated" : "processed"}, ${rejected} rejected`,
+    );
+    return rejected ? 1 : 0;
+  }
+
   if (command === "import") {
     if (importMode === "--latest") {
       let importedCount = 0;
       for (const targetTool of targetTools) {
         const result = await importLatestSessionToTarget({
           targetTool,
+          dryRun,
           cwd,
           homeDir,
           registryPath: resolveRegistryPath(homeDir),
         });
-        if (result.imported) {
+        if (dryRun ? result.candidate : result.imported) {
           importedCount += 1;
         }
         deps.stdout(
           `import ${targetTool}: ${
-            result.imported
+            (dryRun ? result.candidate : result.imported)
               ? (result.candidate?.id ?? "imported")
               : "no candidate"
-          }${dryRun ? " (dry-run ignored for imports)" : ""}`,
+          }${dryRun ? " (dry-run)" : ""}`,
         );
       }
       return importedCount > 0 ? 0 : 1;
     }
 
-    const candidates = await listForeignSessionCandidates(cwd, homeDir);
+    const candidates = (
+      await listForeignSessionCandidates(cwd, homeDir)
+    ).filter(
+      (candidate) =>
+        findConversationByNativeSession(
+          registry,
+          candidate.sourceTool,
+          candidate.id,
+        )?.mirrors[candidate.sourceTool]?.seededSourceOffset == null,
+    );
+    if (dryRun) {
+      const routes = candidates.reduce(
+        (count, candidate) =>
+          count +
+          targetTools.filter((target) => target !== candidate.sourceTool)
+            .length,
+        0,
+      );
+      deps.stdout(`dry-run: ${routes} candidate routes; no writes`);
+      return 0;
+    }
     let importedCount = 0;
 
     for (const candidate of candidates) {

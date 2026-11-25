@@ -1,10 +1,11 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import {
   backfillCodexThreadIndex,
@@ -19,6 +20,7 @@ import {
   readCodexRollout,
   readPiSession,
   syncSourceSessionToTargets,
+  seedLinkedSessionInOpenCode,
 } from "../src/index.js";
 
 const fixturesDir = join(import.meta.dirname, "fixtures");
@@ -91,6 +93,7 @@ describe("runtime sync flows", () => {
     });
 
     expect(firstRun.writes).toHaveLength(2);
+    expect(await exists(`${registryPath}.tmp`)).toBe(false);
     expect(
       firstRun.writes.find((write) => write.targetTool === "claude")
         ?.appendedCount,
@@ -258,7 +261,9 @@ describe("runtime sync flows", () => {
       "claude",
     );
 
-    expect(candidates.map((candidate) => candidate.path)).toContain(validPiPath);
+    expect(candidates.map((candidate) => candidate.path)).toContain(
+      validPiPath,
+    );
     expect(candidates.map((candidate) => candidate.path)).not.toContain(
       malformedPiPath,
     );
@@ -311,7 +316,11 @@ describe("runtime sync flows", () => {
         },
       },
     };
-    await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(registry, null, 2)}\n`,
+      "utf8",
+    );
 
     const repairedRun = await syncSourceSessionToTargets({
       sourceTool: "pi",
@@ -356,7 +365,9 @@ describe("runtime sync flows", () => {
 
     const codexMirrorPath = firstRun.conversation.mirrors.codex?.sessionPath;
     expect(codexMirrorPath).toBeTruthy();
-    expect(firstRun.conversation.mirrors.codex?.seededSourceOffset).toBeTruthy();
+    expect(
+      firstRun.conversation.mirrors.codex?.seededSourceOffset,
+    ).toBeTruthy();
 
     const codexReplay = await syncSourceSessionToTargets({
       sourceTool: "codex",
@@ -389,7 +400,7 @@ describe("runtime sync flows", () => {
     await writeFile(
       secondCodexPath,
       firstContent
-        .replaceAll("codex-session-1", "codex-session-2")
+        .replaceAll("019cdef0-2584-7a14-8020-123456789abc", "codex-session-2")
         .replaceAll("codex-user-1", "codex-user-2")
         .replaceAll("codex-assistant-1", "codex-assistant-2")
         .replaceAll("2026-04-05T10:00:01.000Z", "2026-04-05T11:00:01.000Z")
@@ -428,7 +439,9 @@ describe("runtime sync flows", () => {
     const registry = await loadRegistry(registryPath, { readFile });
     expect(registry.conversations).toHaveLength(2);
 
-    const firstPi = await readPiSession(firstRun.conversation.mirrors.pi!.sessionPath);
+    const firstPi = await readPiSession(
+      firstRun.conversation.mirrors.pi!.sessionPath,
+    );
     const secondPi = await readPiSession(
       secondRun.conversation.mirrors.pi!.sessionPath,
     );
@@ -461,6 +474,71 @@ describe("runtime sync flows", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("backfills Codex thread metadata from the rollout instead of defaults", async () => {
+    const { homeDir, projectDir } = await makeTempWorkspace();
+    const codexDir = join(homeDir, ".codex");
+    const stateDbPath = join(codexDir, "state_5.sqlite");
+    const rolloutPath = join(codexDir, "sessions", "rollout-x.jsonl");
+    await mkdir(join(codexDir, "sessions"), { recursive: true });
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL, model_provider TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, sandbox_policy TEXT NOT NULL, approval_mode TEXT NOT NULL, tokens_used INTEGER NOT NULL DEFAULT 0, has_user_event INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, cli_version TEXT NOT NULL DEFAULT '', first_user_message TEXT NOT NULL DEFAULT '', memory_mode TEXT NOT NULL DEFAULT 'enabled', model TEXT, reasoning_effort TEXT);`,
+    ]);
+    const lines = [
+      {
+        timestamp: "2026-04-05T10:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "11111111-1111-7111-8111-111111111111",
+          timestamp: "2026-04-05T10:00:00.000Z",
+          cwd: projectDir,
+          cli_version: "0.171.0",
+          source: "cli",
+          model_provider: "openai",
+        },
+      },
+      {
+        timestamp: "2026-04-05T10:00:01.000Z",
+        type: "turn_context",
+        payload: {
+          model: "gpt-6",
+          approval_policy: "on-request",
+          effort: "high",
+        },
+      },
+      {
+        timestamp: "2026-04-05T10:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Hello there" }],
+        },
+      },
+    ];
+    await writeFile(
+      rolloutPath,
+      `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+    );
+
+    await backfillCodexThreadIndex({
+      homeDir,
+      threadId: "11111111-1111-7111-8111-111111111111",
+      rolloutPath,
+      cwd: projectDir,
+    });
+
+    const row = execFileSync(
+      "sqlite3",
+      [
+        stateDbPath,
+        "select cli_version, source, model, approval_mode, reasoning_effort from threads;",
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    expect(row).toBe("0.171.0|cli|gpt-6|on-request|high");
   });
 
   it("backfills a missing Codex thread row for an existing mirrored rollout", async () => {
@@ -521,9 +599,22 @@ CREATE TABLE threads (
       `delete from threads where id='${codexMirror.nativeId}';`,
     ]);
 
-    expect(
-      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
-    ).toBe(false);
+    expect(await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId)).toBe(
+      false,
+    );
+
+    // Newer Codex builds add these columns; the picker hides rows without a preview.
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+ALTER TABLE threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN thread_source TEXT;
+ALTER TABLE threads ADD COLUMN created_at_ms INTEGER;
+ALTER TABLE threads ADD COLUMN updated_at_ms INTEGER;
+ALTER TABLE threads ADD COLUMN recency_at INTEGER;
+ALTER TABLE threads ADD COLUMN recency_at_ms INTEGER;
+      `,
+    ]);
 
     const backfilled = await backfillCodexThreadIndex({
       homeDir,
@@ -533,9 +624,9 @@ CREATE TABLE threads (
     });
 
     expect(backfilled.indexed).toBe(true);
-    expect(
-      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
-    ).toBe(true);
+    expect(await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId)).toBe(
+      true,
+    );
 
     const indexedRow = execFileSync("sqlite3", [
       stateDbPath,
@@ -547,6 +638,16 @@ CREATE TABLE threads (
     expect(indexedRow).toContain(codexMirror.nativeId);
     expect(indexedRow).toContain(projectDir);
     expect(indexedRow).toContain("Fix auth");
+
+    const pickerRow = execFileSync("sqlite3", [
+      stateDbPath,
+      `select preview || '|' || thread_source || '|' || (updated_at_ms > 0) from threads where id='${codexMirror.nativeId}';`,
+    ])
+      .toString()
+      .trim();
+
+    expect(pickerRow).toContain("Fix auth");
+    expect(pickerRow).toMatch(/\|user\|1$/);
   });
 
   it("anchors later Pi imports to the current Claude transcript head", async () => {
@@ -887,4 +988,95 @@ CREATE TABLE threads (
     expect(indexedRow).toContain("Fix auth");
     expect(indexedRow).toContain("vscode");
   });
+});
+
+it("keeps compressed Codex rollouts byte-for-byte intact when OpenCode advances", async () => {
+  const { rootDir, homeDir, projectDir, registryPath } =
+    await makeTempWorkspace();
+  const cwd = await realpath(projectDir);
+  const sourcePath = join(rootDir, "rollout.jsonl.zst");
+  const original = zstdCompressSync(
+    await readFile(join(fixturesDir, "codex-rollout.jsonl")),
+  );
+  await writeFile(sourcePath, original);
+  const bundle = await seedLinkedSessionInOpenCode({
+    tool: "codex",
+    sourcePath,
+    cwd,
+    databasePath: join(rootDir, "opencode.db"),
+    registryPath,
+    importVerified: async () => {},
+  });
+  const exportPath = join(rootDir, "export.json");
+  const sync = () =>
+    syncSourceSessionToTargets({
+      sourceTool: "opencode",
+      sourcePath: exportPath,
+      targetTools: ["codex"],
+      registryPath,
+      homeDir,
+    });
+  await writeFile(exportPath, JSON.stringify(bundle));
+  expect((await sync()).writes[0]?.appendedCount).toBe(0);
+  await writeFile(
+    exportPath,
+    JSON.stringify({
+      ...bundle,
+      messages: [
+        ...bundle.messages,
+        {
+          id: "msg_new_turn",
+          type: "user",
+          time: { created: Date.now() },
+          text: "A new OpenCode question",
+        },
+      ],
+    }),
+  );
+  await expect(sync()).rejects.toThrow("Compressed Codex rollouts");
+  expect(await readFile(sourcePath)).toEqual(original);
+  const writable = sourcePath.slice(0, -4);
+  const source = await readFile(
+    join(fixturesDir, "codex-rollout.jsonl"),
+    "utf8",
+  );
+  await writeFile(
+    writable,
+    source.replace("Fix auth", "Changed original prompt"),
+  );
+  await expect(sync()).rejects.toThrow("Original Codex seed history diverged");
+  await writeFile(writable, source.trimEnd());
+  const reopened = await sync();
+  expect(reopened.writes[0]).toMatchObject({
+    sessionPath: writable,
+    targetSessionId: "019cdef0-2584-7a14-8020-123456789abc",
+  });
+  expect(reopened.writes[0]?.appendedCount).toBeGreaterThan(0);
+  expect((await readCodexRollout(writable)).length).toBe(
+    4 + reopened.writes[0]!.appendedCount,
+  );
+  expect(await readFile(writable, "utf8")).toContain("A new OpenCode question");
+  expect((await sync()).writes[0]?.appendedCount).toBe(0);
+  expect(await readFile(sourcePath)).toEqual(original);
+  const crossHarness = () =>
+    syncSourceSessionToTargets({
+      sourceTool: "opencode",
+      sourcePath: exportPath,
+      registryPath,
+      homeDir,
+    });
+  const mirrors = await crossHarness();
+  expect(
+    mirrors.writes.find((write) => write.targetTool === "codex")?.appendedCount,
+  ).toBe(0);
+  for (const tool of ["pi", "claude"]) {
+    const mirror = mirrors.writes.find((write) => write.targetTool === tool)!;
+    const history = await readFile(mirror.sessionPath, "utf8");
+    expect(history).toContain("Fix auth");
+    expect(history).toContain("file contents");
+    expect(history).toContain("A new OpenCode question");
+  }
+  expect(
+    (await crossHarness()).writes.every((write) => write.appendedCount === 0),
+  ).toBe(true);
 });

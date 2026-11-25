@@ -1,0 +1,6 @@
+[fmt]
+semi = true
+singleQuote = false
+
+[test]
+preload = ["./scripts/test-preload.ts"]

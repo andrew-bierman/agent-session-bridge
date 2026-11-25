@@ -13,16 +13,22 @@ Use red-green-refactor for every task:
 ## Commands
 
 ```bash
-pnpm test
-pnpm test:real-agents
-pnpm test:watch
-pnpm typecheck
-pnpm fixture:validate
-pnpm lint
-pnpm format
+bun test
+bun test:real-agents
+bun test:watch
+bun check .
+bun run fixture:validate
+bun lint
+bun fmt --check
 ```
 
-`pnpm test:real-agents` runs the heavyweight command-level E2E matrix. It creates real Pi, Claude Code, and Codex sessions, imports them through native bridge conversions, resumes the imported sessions with the real CLIs, and verifies:
+`bun run test:containers` is the hermetic counterpart: real Omnigent, Codex,
+Claude Code and Pi in an offline container with only the model responses
+scripted, so it needs no API keys and cannot touch your real tool homes. It
+needs podman or docker and is opt-in; plain `bun test` skips it. See
+[containers/README.md](containers/README.md).
+
+`bun test:real-agents` runs the heavyweight command-level E2E matrix. It creates real Pi, Claude Code, and Codex sessions, imports them through native bridge conversions, resumes the imported sessions with the real CLIs, and verifies:
 
 - round-trip continuation across all six ordered tool pairs
 - multi-hop three-agent sequences such as `pi -> claude -> codex -> pi -> codex -> claude`
